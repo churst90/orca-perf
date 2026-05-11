@@ -974,6 +974,11 @@ class EventManager:
     def _process_object_event(self, event: Atspi.Event, counter: int = -1) -> None:
         """Handles all object events destined for scripts."""
 
+        # Invalidate the long-lived role/parent cache for objects that are
+        # going away. This must happen before event_scope() so the within-
+        # event cache cannot inherit a stale value.
+        AXObject.invalidate_for_event(event.type, event.source)
+
         # Memoize role/parent/name/state lookups for the duration of this
         # event handler. Without this, a single focus event triggers 10-15
         # cross-process D-Bus calls because the same property is queried

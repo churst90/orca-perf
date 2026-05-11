@@ -84,6 +84,14 @@ class AXObject:
     KNOWN_DEAD: ClassVar[dict[int, bool]] = {}
     OBJECT_ATTRIBUTES: ClassVar[dict[int, dict[str, str]]] = {}
 
+    # Long-lived caches that survive across events. AT-SPI roles essentially
+    # never change during an object's lifetime; parents rarely do. Entries are
+    # invalidated when the object becomes defunct (see invalidate_for_event).
+    # Compounds with the event-scope cache: roles seen once stay cached even
+    # after the event ends.
+    LONG_LIVED_ROLES: ClassVar[dict[int, Atspi.Role]] = {}
+    LONG_LIVED_PARENTS: ClassVar[dict[int, Atspi.Accessible | None]] = {}
+
     _lock = threading.Lock()
 
     # Per-thread event-scoped caches. Populated by event_scope() so that
@@ -112,6 +120,7 @@ class AXObject:
         if log_perf:
             AXObject._perf_stats_tls.stats = {
                 "hits": 0,
+                "ll_hits": 0,
                 "misses": 0,
                 "start": time.monotonic(),
             }
@@ -121,14 +130,17 @@ class AXObject:
         finally:
             if log_perf:
                 stats = AXObject._perf_stats_tls.stats
-                total = stats["hits"] + stats["misses"]
+                cached = stats["hits"] + stats["ll_hits"]
+                total = cached + stats["misses"]
                 if total > 0:
                     elapsed_ms = (time.monotonic() - stats["start"]) * 1000.0
-                    hit_pct = 100.0 * stats["hits"] / total
+                    cached_pct = 100.0 * cached / total
                     _perf_log_write(
                         f"event_scope[{label}]: "
-                        f"{stats['hits']}/{total} hits ({hit_pct:.0f}%) "
-                        f"in {elapsed_ms:.1f}ms",
+                        f"{stats['hits']} ev-hits, "
+                        f"{stats['ll_hits']} ll-hits, "
+                        f"{stats['misses']} misses "
+                        f"({cached_pct:.0f}% cached) in {elapsed_ms:.1f}ms",
                     )
                 AXObject._perf_stats_tls.stats = None
             AXObject._event_cache_tls.roles = None
@@ -144,11 +156,36 @@ class AXObject:
                 stats["hits"] += 1
 
     @staticmethod
+    def _record_ll_hit() -> None:
+        if _PERF_LOG_ENABLED:
+            stats = getattr(AXObject._perf_stats_tls, "stats", None)
+            if stats is not None:
+                stats["ll_hits"] += 1
+
+    @staticmethod
     def _record_cache_miss() -> None:
         if _PERF_LOG_ENABLED:
             stats = getattr(AXObject._perf_stats_tls, "stats", None)
             if stats is not None:
                 stats["misses"] += 1
+
+    @staticmethod
+    def invalidate_for_event(event_type: str, source: Atspi.Accessible) -> None:
+        """Invalidates long-lived cache entries based on an AT-SPI event.
+
+        Called from the event manager before each event is dispatched. Most
+        events leave the long-lived caches alone; defunct events remove the
+        object entirely.
+        """
+
+        if not event_type:
+            return
+        if event_type == "object:defunct":
+            key = hash(source)
+            with AXObject._lock:
+                AXObject.LONG_LIVED_ROLES.pop(key, None)
+                AXObject.LONG_LIVED_PARENTS.pop(key, None)
+                AXObject.KNOWN_DEAD[key] = True
 
     @staticmethod
     def _clear_stored_data() -> None:
@@ -591,13 +628,29 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return None
 
+        key = hash(obj)
         cache = getattr(AXObject._event_cache_tls, "parents", None)
-        if cache is not None:
-            key = hash(obj)
-            if key in cache:
-                AXObject._record_cache_hit()
-                return cache[key]
 
+        # Layer 1: event-scope cache (within-event redundancy)
+        if cache is not None and key in cache:
+            AXObject._record_cache_hit()
+            return cache[key]
+
+        # Layer 2: long-lived parent cache (cross-event; tree mutations are
+        # signalled by children-changed events but we only invalidate on
+        # defunct here, accepting brief staleness for reparenting cases)
+        ll_lookup_done = False
+        with AXObject._lock:
+            if key in AXObject.LONG_LIVED_PARENTS:
+                ll_parent = AXObject.LONG_LIVED_PARENTS[key]
+                ll_lookup_done = True
+        if ll_lookup_done:
+            if cache is not None:
+                cache[key] = ll_parent
+            AXObject._record_ll_hit()
+            return ll_parent
+
+        # Layer 3: AT-SPI call (D-Bus round-trip)
         try:
             parent = Atspi.Accessible.get_parent(obj)
         except GLib.GError as error:
@@ -620,6 +673,8 @@ class AXObject:
             tokens = ["AXObject:", obj, "claims to have no parent"]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
+        with AXObject._lock:
+            AXObject.LONG_LIVED_PARENTS[key] = parent
         if cache is not None:
             cache[key] = parent
             AXObject._record_cache_miss()
@@ -754,13 +809,24 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return Atspi.Role.INVALID
 
+        key = hash(obj)
         cache = getattr(AXObject._event_cache_tls, "roles", None)
-        if cache is not None:
-            key = hash(obj)
-            if key in cache:
-                AXObject._record_cache_hit()
-                return cache[key]
 
+        # Layer 1: event-scope cache (within-event redundancy)
+        if cache is not None and key in cache:
+            AXObject._record_cache_hit()
+            return cache[key]
+
+        # Layer 2: long-lived role cache (cross-event; role rarely changes)
+        with AXObject._lock:
+            ll_role = AXObject.LONG_LIVED_ROLES.get(key)
+        if ll_role is not None:
+            if cache is not None:
+                cache[key] = ll_role
+            AXObject._record_ll_hit()
+            return ll_role
+
+        # Layer 3: AT-SPI call (D-Bus round-trip)
         try:
             role = Atspi.Accessible.get_role(obj)
         except GLib.GError as error:
@@ -770,6 +836,8 @@ class AXObject:
 
         AXObject._set_known_dead_status(obj, False)
 
+        with AXObject._lock:
+            AXObject.LONG_LIVED_ROLES[key] = role
         if cache is not None:
             cache[key] = role
             AXObject._record_cache_miss()
