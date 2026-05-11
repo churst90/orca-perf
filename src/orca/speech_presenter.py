@@ -3034,6 +3034,11 @@ class SpeechPresenter(Extension):
         if not _AXObject.is_valid(obj):
             return False
 
+        # The first speak from this burst is likely still playing.
+        # Interrupt it once (single cancel; not 30x like the old approach)
+        # before speaking the final destination.
+        speech_manager.get_manager().interrupt_speech()
+
         self._last_interrupt_speak_time = _time.monotonic()
         where_am_i_type = args.pop("where_am_i_type", None)
         context = self._build_generator_context(where_am_i_type)
