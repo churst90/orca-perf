@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 import gi
 
 gi.require_version("Atspi", "2.0")
-from gi.repository import Atspi
+from gi.repository import Atspi, GLib
 
 from . import (
     cmdnames,
@@ -126,6 +126,21 @@ class StructuralNavigator(Extension):
         self._NAV_CACHE_MAX = 200
         self._nav_cache_hits = 0
         self._nav_cache_misses = 0
+
+        # Coalesce-with-delay state for held-key structural nav. Each
+        # script.present_object() call below in _present_object does a
+        # scroll-to-center which blocks the main thread in
+        # time.sleep(0.05) up to 3 times (ax_event_synthesizer.py:403). At
+        # 30Hz key auto-repeat the main thread backs up and exceeds the
+        # 6 sec systemd watchdog, killing Orca. We coalesce the final
+        # present (scroll + speech) when a burst is detected; focus and
+        # cursor still move on each press via emit_region_changed.
+        self._present_timer_id: int | None = None
+        self._present_pending: tuple | None = None
+        self._last_present_time: float = 0.0
+        self._PRESENT_BURST_WINDOW = 0.10  # 100ms
+        self._PRESENT_DEFER_MS = 50
+
         super().__init__()
 
     def _cached_or_compute(
@@ -1144,7 +1159,46 @@ class StructuralNavigator(Extension):
                 script.utilities.set_caret_position(obj, offset)
             return
 
+        # Held-key coalescing: script.present_object below calls
+        # scroll_to_center which blocks on time.sleep up to 150ms per
+        # invocation. At 30Hz auto-repeat the main thread can't keep up
+        # and the systemd watchdog fires. Defer the actual present when
+        # a burst is detected; the cursor still moved via the
+        # emit_region_changed above so progress through the document
+        # is visible to focus tracking.
+        now = time.monotonic()
+        in_burst = (
+            self._present_timer_id is not None
+            or (now - self._last_present_time) < self._PRESENT_BURST_WINDOW
+        )
+        if in_burst:
+            if self._present_timer_id is not None:
+                GLib.source_remove(self._present_timer_id)
+            self._present_pending = (script, obj, offset)
+            self._present_timer_id = GLib.timeout_add(
+                self._PRESENT_DEFER_MS, self._present_fire,
+            )
+            return
+
+        self._last_present_time = now
         script.present_object(obj, offset=offset, interrupt=True)
+
+    def _present_fire(self) -> bool:
+        """Timer callback: present the final target of a held-key burst."""
+
+        self._present_timer_id = None
+        pending = self._present_pending
+        self._present_pending = None
+        if pending is None:
+            return False
+
+        script, obj, offset = pending
+        if not AXObject.is_valid(obj):
+            return False
+
+        self._last_present_time = time.monotonic()
+        script.present_object(obj, offset=offset, interrupt=True)
+        return False
 
     def _present_object_list(
         self,
