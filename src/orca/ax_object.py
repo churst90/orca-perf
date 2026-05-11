@@ -102,6 +102,13 @@ class AXObject:
 
     _LL_CACHE_MAX = 8000
 
+    # DIAGNOSTIC: disable long-lived name cache to test whether it is
+    # responsible for the wrong-window-title-on-Alt-Tab behavior seen with
+    # Chromium-based browsers. Flip back to False once the question is
+    # resolved. When True, get_name() bypasses the LL layer; event-scope
+    # cache still works within a single event.
+    _NAME_LL_CACHE_DISABLED = True
+
     _lock = threading.Lock()
 
     # Per-thread event-scoped caches. Populated by event_scope() so that
@@ -936,14 +943,17 @@ class AXObject:
             AXObject._record_cache_hit()
             return cache[key]
 
-        # Layer 2: long-lived name cache (invalidated on name-change events)
-        with AXObject._lock:
-            ll_name = AXObject.LONG_LIVED_NAMES.get(key)
-        if ll_name is not None:
-            if cache is not None:
-                cache[key] = ll_name
-            AXObject._record_ll_hit()
-            return ll_name
+        # Layer 2: long-lived name cache (invalidated on name-change events).
+        # Skipped when the diagnostic flag is set so we can isolate whether
+        # this layer is contributing to the wrong-window-title issue.
+        if not AXObject._NAME_LL_CACHE_DISABLED:
+            with AXObject._lock:
+                ll_name = AXObject.LONG_LIVED_NAMES.get(key)
+            if ll_name is not None:
+                if cache is not None:
+                    cache[key] = ll_name
+                AXObject._record_ll_hit()
+                return ll_name
 
         # Layer 3: AT-SPI call
         try:
@@ -957,7 +967,7 @@ class AXObject:
 
         # Only cache non-empty names; empty string could mean "not yet set"
         # in some toolkit implementations and we don't want to lock that in.
-        if name:
+        if name and not AXObject._NAME_LL_CACHE_DISABLED:
             AXObject._ll_store(AXObject.LONG_LIVED_NAMES, key, name)
         if cache is not None:
             cache[key] = name

@@ -1180,8 +1180,14 @@ class StructuralNavigator(Extension):
             )
             return
 
-        self._last_present_time = now
+        # IMPORTANT: stamp _last_present_time AFTER the call returns, not
+        # before. script.present_object can block for ~150ms in
+        # scroll-with-sleeps. If we stamped before, events that queued
+        # during the block would see "150ms elapsed > 100ms window" and
+        # bypass the coalesce. Stamping after means subsequent queued
+        # events see "~0ms since last present" and properly defer.
         script.present_object(obj, offset=offset, interrupt=True)
+        self._last_present_time = time.monotonic()
 
     def _present_fire(self) -> bool:
         """Timer callback: present the final target of a held-key burst."""
@@ -1196,8 +1202,8 @@ class StructuralNavigator(Extension):
         if not AXObject.is_valid(obj):
             return False
 
-        self._last_present_time = time.monotonic()
         script.present_object(obj, offset=offset, interrupt=True)
+        self._last_present_time = time.monotonic()
         return False
 
     def _present_object_list(
