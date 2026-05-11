@@ -86,15 +86,19 @@ class AXObject:
 
     # Long-lived caches that survive across events. AT-SPI roles essentially
     # never change during an object's lifetime; parents rarely do; names
-    # change occasionally (~3% of events); states change frequently but each
-    # change is signalled by a state-changed:* event so we can invalidate
-    # reliably. Entries are removed on defunct. Each dict is hard-capped at
+    # change occasionally (~3% of events). Entries are removed on defunct
+    # or relevant property-change events. Each dict is hard-capped at
     # _LL_CACHE_MAX entries and cleared wholesale when exceeded to bound
     # memory in long sessions.
+    #
+    # NOTE: State sets are NOT long-lived cached. Atspi.StateSet objects
+    # hold an internal pointer to the underlying AT-SPI object; if that
+    # object becomes defunct between events (e.g. window closes), calling
+    # .contains() on a stale StateSet segfaults inside libatspi. States
+    # are still memoized within a single event via the event_scope cache.
     LONG_LIVED_ROLES: ClassVar[dict[int, Atspi.Role]] = {}
     LONG_LIVED_PARENTS: ClassVar[dict[int, Atspi.Accessible | None]] = {}
     LONG_LIVED_NAMES: ClassVar[dict[int, str]] = {}
-    LONG_LIVED_STATES: ClassVar[dict[int, Atspi.StateSet]] = {}
 
     _LL_CACHE_MAX = 8000
 
@@ -193,7 +197,6 @@ class AXObject:
                 AXObject.LONG_LIVED_ROLES.pop(key, None)
                 AXObject.LONG_LIVED_PARENTS.pop(key, None)
                 AXObject.LONG_LIVED_NAMES.pop(key, None)
-                AXObject.LONG_LIVED_STATES.pop(key, None)
                 AXObject.KNOWN_DEAD[key] = True
         elif event_type == "object:property-change:accessible-name":
             with AXObject._lock:
@@ -204,9 +207,6 @@ class AXObject:
         elif event_type == "object:property-change:accessible-parent":
             with AXObject._lock:
                 AXObject.LONG_LIVED_PARENTS.pop(key, None)
-        elif event_type.startswith("object:state-changed:"):
-            with AXObject._lock:
-                AXObject.LONG_LIVED_STATES.pop(key, None)
 
     @staticmethod
     def _ll_store(d: dict, key: int, value) -> None:
@@ -1154,22 +1154,13 @@ class AXObject:
         key = hash(obj)
         cache = getattr(AXObject._event_cache_tls, "state_sets", None)
 
-        # Layer 1: event-scope cache
+        # Event-scope cache only. StateSet is NOT long-lived cached because
+        # Atspi.StateSet holds an internal ref to a possibly-dead object and
+        # calling .contains() on a stale instance segfaults inside libatspi.
         if cache is not None and key in cache:
             AXObject._record_cache_hit()
             return cache[key]
 
-        # Layer 2: long-lived state cache. Invalidated on any
-        # object:state-changed:* event for this object.
-        with AXObject._lock:
-            ll_state = AXObject.LONG_LIVED_STATES.get(key)
-        if ll_state is not None:
-            if cache is not None:
-                cache[key] = ll_state
-            AXObject._record_ll_hit()
-            return ll_state
-
-        # Layer 3: AT-SPI call
         try:
             state_set = Atspi.Accessible.get_state_set(obj)
         except GLib.GError as error:
@@ -1184,7 +1175,6 @@ class AXObject:
 
         AXObject._set_known_dead_status(obj, False)
 
-        AXObject._ll_store(AXObject.LONG_LIVED_STATES, key, state_set)
         if cache is not None:
             cache[key] = state_set
             AXObject._record_cache_miss()
