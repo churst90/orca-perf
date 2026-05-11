@@ -25,9 +25,11 @@
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import gi
@@ -42,6 +44,10 @@ if TYPE_CHECKING:
     from typing import ClassVar
 
 
+# When set (env var ORCA_PERF_LOG=1), event_scope logs cache hit rates.
+_PERF_LOG_ENABLED = os.environ.get("ORCA_PERF_LOG", "").lower() in ("1", "true", "yes")
+
+
 class AXObject:
     """Wrapper for the Atspi.Accessible interface."""
 
@@ -49,6 +55,71 @@ class AXObject:
     OBJECT_ATTRIBUTES: ClassVar[dict[int, dict[str, str]]] = {}
 
     _lock = threading.Lock()
+
+    # Per-thread event-scoped caches. Populated by event_scope() so that
+    # repeated property reads within a single event handler hit the cache
+    # instead of crossing D-Bus. Cleared on scope exit so values cannot go
+    # stale across events.
+    _event_cache_tls = threading.local()
+    _perf_stats_tls = threading.local()
+
+    @staticmethod
+    @contextmanager
+    def event_scope(label: str = "") -> Generator[None, None, None]:
+        """Memoizes AT-SPI property reads within a single event handler.
+
+        Within the scope, get_role(), get_parent(), get_name(), and
+        get_state_set() return cached values keyed by hash(obj). The cache is
+        discarded on scope exit so values cannot go stale across events.
+        """
+
+        AXObject._event_cache_tls.roles = {}
+        AXObject._event_cache_tls.parents = {}
+        AXObject._event_cache_tls.names = {}
+        AXObject._event_cache_tls.state_sets = {}
+
+        log_perf = _PERF_LOG_ENABLED
+        if log_perf:
+            AXObject._perf_stats_tls.stats = {
+                "hits": 0,
+                "misses": 0,
+                "start": time.monotonic(),
+            }
+
+        try:
+            yield
+        finally:
+            if log_perf:
+                stats = AXObject._perf_stats_tls.stats
+                total = stats["hits"] + stats["misses"]
+                elapsed_ms = (time.monotonic() - stats["start"]) * 1000.0
+                if total > 0:
+                    hit_pct = 100.0 * stats["hits"] / total
+                    msg = (
+                        f"AXObject.event_scope[{label}]: "
+                        f"{stats['hits']}/{total} hits ({hit_pct:.0f}%) "
+                        f"in {elapsed_ms:.1f}ms"
+                    )
+                    debug.print_message(debug.LEVEL_INFO, msg, True)
+                AXObject._perf_stats_tls.stats = None
+            AXObject._event_cache_tls.roles = None
+            AXObject._event_cache_tls.parents = None
+            AXObject._event_cache_tls.names = None
+            AXObject._event_cache_tls.state_sets = None
+
+    @staticmethod
+    def _record_cache_hit() -> None:
+        if _PERF_LOG_ENABLED:
+            stats = getattr(AXObject._perf_stats_tls, "stats", None)
+            if stats is not None:
+                stats["hits"] += 1
+
+    @staticmethod
+    def _record_cache_miss() -> None:
+        if _PERF_LOG_ENABLED:
+            stats = getattr(AXObject._perf_stats_tls, "stats", None)
+            if stats is not None:
+                stats["misses"] += 1
 
     @staticmethod
     def _clear_stored_data() -> None:
@@ -491,6 +562,13 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return None
 
+        cache = getattr(AXObject._event_cache_tls, "parents", None)
+        if cache is not None:
+            key = hash(obj)
+            if key in cache:
+                AXObject._record_cache_hit()
+                return cache[key]
+
         try:
             parent = Atspi.Accessible.get_parent(obj)
         except GLib.GError as error:
@@ -501,6 +579,9 @@ class AXObject:
         if parent == obj:
             tokens = ["AXObject:", obj, "claims to be its own parent"]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+            if cache is not None:
+                cache[key] = None
+                AXObject._record_cache_miss()
             return None
 
         if parent is None and AXObject.get_role(obj) not in [
@@ -509,6 +590,10 @@ class AXObject:
         ]:
             tokens = ["AXObject:", obj, "claims to have no parent"]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+
+        if cache is not None:
+            cache[key] = parent
+            AXObject._record_cache_miss()
 
         return parent
 
@@ -640,6 +725,13 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return Atspi.Role.INVALID
 
+        cache = getattr(AXObject._event_cache_tls, "roles", None)
+        if cache is not None:
+            key = hash(obj)
+            if key in cache:
+                AXObject._record_cache_hit()
+                return cache[key]
+
         try:
             role = Atspi.Accessible.get_role(obj)
         except GLib.GError as error:
@@ -648,6 +740,11 @@ class AXObject:
             return Atspi.Role.INVALID
 
         AXObject._set_known_dead_status(obj, False)
+
+        if cache is not None:
+            cache[key] = role
+            AXObject._record_cache_miss()
+
         return role
 
     @staticmethod
@@ -706,6 +803,13 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return ""
 
+        cache = getattr(AXObject._event_cache_tls, "names", None)
+        if cache is not None:
+            key = hash(obj)
+            if key in cache:
+                AXObject._record_cache_hit()
+                return cache[key]
+
         try:
             name = Atspi.Accessible.get_name(obj)
         except GLib.GError as error:
@@ -714,6 +818,11 @@ class AXObject:
             return ""
 
         AXObject._set_known_dead_status(obj, False)
+
+        if cache is not None:
+            cache[key] = name
+            AXObject._record_cache_miss()
+
         return name
 
     @staticmethod
@@ -902,6 +1011,13 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return Atspi.StateSet()
 
+        cache = getattr(AXObject._event_cache_tls, "state_sets", None)
+        if cache is not None:
+            key = hash(obj)
+            if key in cache:
+                AXObject._record_cache_hit()
+                return cache[key]
+
         try:
             state_set = Atspi.Accessible.get_state_set(obj)
         except GLib.GError as error:
@@ -915,6 +1031,11 @@ class AXObject:
             return Atspi.StateSet()
 
         AXObject._set_known_dead_status(obj, False)
+
+        if cache is not None:
+            cache[key] = state_set
+            AXObject._record_cache_miss()
+
         return state_set
 
     @staticmethod

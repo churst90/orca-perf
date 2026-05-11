@@ -974,6 +974,16 @@ class EventManager:
     def _process_object_event(self, event: Atspi.Event, counter: int = -1) -> None:
         """Handles all object events destined for scripts."""
 
+        # Memoize role/parent/name/state lookups for the duration of this
+        # event handler. Without this, a single focus event triggers 10-15
+        # cross-process D-Bus calls because the same property is queried
+        # multiple times by overlapping utilities (is_text, is_entry,
+        # find_ancestor, ...). The scope is per-event so values cannot go
+        # stale across events.
+        with AXObject.event_scope(event.type):
+            self._process_object_event_inner(event, counter)
+
+    def _process_object_event_inner(self, event: Atspi.Event, counter: int) -> None:
         if self._is_obsoleted_by(event, counter) or self._handle_early_event_processing(event):
             return
 
