@@ -28,6 +28,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -112,7 +114,106 @@ class StructuralNavigator(Extension):
         self._suspended: bool = False
         self._mode_for_script: dict[default.Script, NavigationMode] = {}
         self._previous_mode_for_script: dict[default.Script, NavigationMode] = {}
+
+        # Per-root cache of structural-nav matches. Without this every H/K/F/B
+        # keystroke walks the entire AT-SPI tree to find candidates; on heavy
+        # web pages (hundreds of headings, thousands of links) that walk costs
+        # tens of milliseconds. Key: (hash(root), cache_key); value: list of
+        # accessibles. Invalidated when the tree under root changes -- see
+        # invalidate_nav_cache_for_event().
+        self._nav_cache: dict[tuple[int, str], list[Atspi.Accessible]] = {}
+        self._nav_cache_lock = threading.Lock()
+        self._NAV_CACHE_MAX = 200
+        self._nav_cache_hits = 0
+        self._nav_cache_misses = 0
         super().__init__()
+
+    def _cached_or_compute(
+        self,
+        root: Atspi.Accessible,
+        cache_key: str,
+        compute_fn: Callable[[], list[Atspi.Accessible]],
+    ) -> list[Atspi.Accessible]:
+        """Returns cached matches keyed by (root, cache_key) or computes and stores them."""
+
+        if root is None:
+            return compute_fn()
+        full_key = (hash(root), cache_key)
+        with self._nav_cache_lock:
+            cached = self._nav_cache.get(full_key)
+        if cached is not None:
+            self._nav_cache_hits += 1
+            self._log_nav_cache(cache_key, hit=True, n=len(cached))
+            return cached
+        t0 = time.monotonic()
+        result = compute_fn()
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        with self._nav_cache_lock:
+            if len(self._nav_cache) >= self._NAV_CACHE_MAX:
+                self._nav_cache.clear()
+            self._nav_cache[full_key] = result
+        self._nav_cache_misses += 1
+        self._log_nav_cache(cache_key, hit=False, n=len(result), elapsed_ms=elapsed_ms)
+        return result
+
+    def _log_nav_cache(
+        self,
+        cache_key: str,
+        hit: bool,
+        n: int,
+        elapsed_ms: float = 0.0,
+    ) -> None:
+        """Append a line to ~/orca-perf.log when ORCA_PERF_LOG=1."""
+
+        from .ax_object import _perf_log_write
+        if hit:
+            _perf_log_write(f"nav_cache[{cache_key}] HIT n={n}")
+        else:
+            _perf_log_write(f"nav_cache[{cache_key}] MISS n={n} fetch={elapsed_ms:.1f}ms")
+
+    def invalidate_nav_cache_for_event(
+        self,
+        event_type: str,
+        source: Atspi.Accessible,
+    ) -> None:
+        """Invalidates the structural-nav cache based on an AT-SPI event.
+
+        Defunct events drop entries rooted at the source. Children-changed
+        events drop entries whose root is an ancestor of the source (the
+        change happened somewhere under that root). All other events are
+        ignored.
+        """
+
+        if not event_type or source is None:
+            return
+
+        if event_type == "object:defunct":
+            source_hash = hash(source)
+            with self._nav_cache_lock:
+                stale = [k for k in self._nav_cache if k[0] == source_hash]
+                for k in stale:
+                    self._nav_cache.pop(k, None)
+            return
+
+        if not event_type.startswith("object:children-changed"):
+            return
+
+        # Walk up from source; any cached entry whose root is an ancestor is
+        # now stale. get_parent() is itself cached (long-lived) so this walk
+        # is cheap.
+        ancestor_hashes: set[int] = set()
+        current = source
+        depth = 0
+        while current is not None and depth < 100:
+            ancestor_hashes.add(hash(current))
+            current = AXObject.get_parent(current)
+            depth += 1
+        if not ancestor_hashes:
+            return
+        with self._nav_cache_lock:
+            stale = [k for k in self._nav_cache if k[0] in ancestor_hashes]
+            for k in stale:
+                self._nav_cache.pop(k, None)
 
     # pylint: disable-next=too-many-locals
     def _get_commands(self) -> list[Command]:
@@ -1102,6 +1203,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "annotations", lambda: AXUtilities.find_all_annotations(root),
+            )
         return AXUtilities.find_all_annotations(root, pred=pred)
 
     @dbus_service.command
@@ -1209,6 +1314,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "blockquotes", lambda: AXUtilities.find_all_block_quotes(root),
+            )
         return AXUtilities.find_all_block_quotes(root, pred=pred)
 
     @dbus_service.command
@@ -1303,6 +1412,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "buttons", lambda: AXUtilities.find_all_buttons(root),
+            )
         return AXUtilities.find_all_buttons(root, pred=pred)
 
     @dbus_service.command
@@ -1397,6 +1510,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "checkboxes", lambda: AXUtilities.find_all_check_boxes(root),
+            )
         return AXUtilities.find_all_check_boxes(root, pred=pred)
 
     @dbus_service.command
@@ -1605,6 +1722,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "comboboxes", lambda: AXUtilities.find_all_combo_boxes(root),
+            )
         return AXUtilities.find_all_combo_boxes(root, pred=pred)
 
     @dbus_service.command
@@ -1908,6 +2029,14 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        # Cache the unfiltered case; level/pred filtered queries fall through
+        # to live AT-SPI to keep the cache simple.
+        if level is None and pred is None:
+            return self._cached_or_compute(
+                root,
+                "headings",
+                lambda: AXUtilities.find_all_headings(root),
+            )
         if level is None:
             return AXUtilities.find_all_headings(root, pred=pred)
         return AXUtilities.find_all_headings_at_level(root, level, pred=pred)
@@ -2547,6 +2676,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "iframes", lambda: AXUtilities.find_all_internal_frames(root),
+            )
         return AXUtilities.find_all_internal_frames(root, pred=pred)
 
     @dbus_service.command
@@ -2655,6 +2788,10 @@ class StructuralNavigator(Extension):
             return not (skip_unlabeled and not self._image_is_labeled(obj))
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "images", lambda: AXUtilities.find_all_images_and_image_maps(root),
+            )
         return AXUtilities.find_all_images_and_image_maps(root, pred=pred)
 
     @dbus_service.command
@@ -2749,6 +2886,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "landmarks", lambda: AXUtilities.find_all_landmarks(root),
+            )
         return AXUtilities.find_all_landmarks(root, pred=pred)
 
     def _present_landmark(
@@ -3069,6 +3210,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "live_regions", lambda: AXUtilities.find_all_live_regions(root),
+            )
         return AXUtilities.find_all_live_regions(root, pred=pred)
 
     @dbus_service.command
@@ -3164,6 +3309,10 @@ class StructuralNavigator(Extension):
             return has_at_least_three_characters(x)
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "paragraphs", lambda: AXUtilities.find_all_paragraphs(root, True),
+            )
         return AXUtilities.find_all_paragraphs(root, True, pred=pred)
 
     @dbus_service.command
@@ -3258,6 +3407,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "radio_buttons", lambda: AXUtilities.find_all_radio_buttons(root),
+            )
         return AXUtilities.find_all_radio_buttons(root, pred=pred)
 
     @dbus_service.command
@@ -3362,6 +3515,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "separators", lambda: AXUtilities.find_all_separators(root),
+            )
         return AXUtilities.find_all_separators(root, pred=pred)
 
     @dbus_service.command
@@ -3426,6 +3583,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "tables", lambda: AXUtilities.find_all_tables(root),
+            )
         return AXUtilities.find_all_tables(root, pred=pred)
 
     def _get_first_table_cell(self, table: Atspi.Accessible) -> Atspi.Accessible | None:
@@ -3547,6 +3708,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "unvisited_links", lambda: AXUtilities.find_all_unvisited_links(root),
+            )
         return AXUtilities.find_all_unvisited_links(root, pred=pred)
 
     @dbus_service.command
@@ -3651,6 +3816,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "visited_links", lambda: AXUtilities.find_all_visited_links(root),
+            )
         return AXUtilities.find_all_visited_links(root, pred=pred)
 
     @dbus_service.command
@@ -3755,6 +3924,10 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root, "links", lambda: AXUtilities.find_all_links(root),
+            )
         return AXUtilities.find_all_links(root, pred=pred)
 
     @dbus_service.command

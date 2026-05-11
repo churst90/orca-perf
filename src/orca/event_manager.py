@@ -979,6 +979,13 @@ class EventManager:
         # event cache cannot inherit a stale value.
         AXObject.invalidate_for_event(event.type, event.source)
 
+        # Drop cached structural-navigation matches when the tree changes.
+        # Lazy import to avoid a circular dependency at module load time.
+        from . import structural_navigator
+        structural_navigator.get_navigator().invalidate_nav_cache_for_event(
+            event.type, event.source,
+        )
+
         # Memoize role/parent/name/state lookups for the duration of this
         # event handler. Without this, a single focus event triggers 10-15
         # cross-process D-Bus calls because the same property is queried
