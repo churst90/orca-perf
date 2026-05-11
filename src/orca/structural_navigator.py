@@ -3001,6 +3001,16 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root,
+                "lists",
+                lambda: AXUtilities.find_all_lists(
+                    root,
+                    include_description_lists=True,
+                    include_tab_lists=True,
+                ),
+            )
         return AXUtilities.find_all_lists(
             root,
             include_description_lists=True,
@@ -3111,6 +3121,16 @@ class StructuralNavigator(Extension):
             pred = self._is_non_document_object
 
         root = self._determine_root_container(script)
+        if pred is None:
+            return self._cached_or_compute(
+                root,
+                "list_items",
+                lambda: AXUtilities.find_all_list_items(
+                    root,
+                    include_description_terms=True,
+                    include_tabs=True,
+                ),
+            )
         return AXUtilities.find_all_list_items(
             root,
             include_description_terms=True,
