@@ -44,8 +44,38 @@ if TYPE_CHECKING:
     from typing import ClassVar
 
 
-# When set (env var ORCA_PERF_LOG=1), event_scope logs cache hit rates.
+# When set (env var ORCA_PERF_LOG=1), event_scope writes cache hit-rate
+# lines to ~/orca-perf.log (or $ORCA_PERF_LOG_FILE if set). Bypasses Orca's
+# debug system so the file is written regardless of --debug-file.
 _PERF_LOG_ENABLED = os.environ.get("ORCA_PERF_LOG", "").lower() in ("1", "true", "yes")
+_PERF_LOG_PATH = os.environ.get(
+    "ORCA_PERF_LOG_FILE",
+    os.path.expanduser("~/orca-perf.log"),
+)
+_PERF_LOG_FILE = None
+_PERF_LOG_LOCK = threading.Lock()
+
+def _perf_log_write(msg: str) -> None:
+    """Append a line to the perf log file. Opens lazily, line-buffered."""
+
+    global _PERF_LOG_FILE
+    if not _PERF_LOG_ENABLED:
+        return
+    with _PERF_LOG_LOCK:
+        if _PERF_LOG_FILE is None:
+            try:
+                _PERF_LOG_FILE = open(  # noqa: SIM115
+                    _PERF_LOG_PATH, "a", buffering=1, encoding="utf-8",
+                )
+                _PERF_LOG_FILE.write(
+                    f"# orca-perf log opened {time.strftime('%Y-%m-%d %H:%M:%S')}\n",
+                )
+            except OSError:
+                return
+        try:
+            _PERF_LOG_FILE.write(f"{time.monotonic():.3f} {msg}\n")
+        except OSError:
+            pass
 
 
 class AXObject:
@@ -92,15 +122,14 @@ class AXObject:
             if log_perf:
                 stats = AXObject._perf_stats_tls.stats
                 total = stats["hits"] + stats["misses"]
-                elapsed_ms = (time.monotonic() - stats["start"]) * 1000.0
                 if total > 0:
+                    elapsed_ms = (time.monotonic() - stats["start"]) * 1000.0
                     hit_pct = 100.0 * stats["hits"] / total
-                    msg = (
-                        f"AXObject.event_scope[{label}]: "
+                    _perf_log_write(
+                        f"event_scope[{label}]: "
                         f"{stats['hits']}/{total} hits ({hit_pct:.0f}%) "
-                        f"in {elapsed_ms:.1f}ms"
+                        f"in {elapsed_ms:.1f}ms",
                     )
-                    debug.print_message(debug.LEVEL_INFO, msg, True)
                 AXObject._perf_stats_tls.stats = None
             AXObject._event_cache_tls.roles = None
             AXObject._event_cache_tls.parents = None
