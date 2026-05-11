@@ -37,9 +37,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+import time as _time
+
 import gi
 
 gi.require_version("Gtk", "3.0")
+from gi.repository import GLib as _GLib
 
 from . import (
     cmdnames,
@@ -855,6 +858,15 @@ class SpeechPresenter(Extension):
         self._progress_bar_cache: dict = {}
         self._text_attribute_change_mode_override: TextAttributeChangeMode | None = None
         self._output_recorder = output_recorder.OutputRecorder("speech")
+
+        # Coalesce-with-delay state for held-key navigation. See
+        # present_generated_speech() for details.
+        self._coalesce_timer_id: int | None = None
+        self._coalesce_pending: tuple | None = None
+        self._last_interrupt_speak_time: float = 0.0
+        self._COALESCE_BURST_WINDOW = 0.10  # 100ms: "are we in a burst?"
+        self._COALESCE_DEFER_MS = 40  # delay before speaking after key activity stops
+
         super().__init__()
 
     def _get_commands(self) -> list[Command]:
@@ -2967,12 +2979,67 @@ class SpeechPresenter(Extension):
         obj: Atspi.Accessible,
         **args: Any,
     ) -> None:
-        """Generates speech for obj using the script's speech generator and speaks it."""
+        """Generates speech for obj using the script's speech generator and speaks it.
+
+        When called with interrupt=True (e.g. from structural navigation), the
+        call is coalesced if it arrives during a burst of similar calls (held
+        key generating 30+ events/sec). The first call in a burst is spoken
+        immediately so the user gets responsive feedback. Subsequent calls
+        within COALESCE_BURST_WINDOW are deferred via a GLib timer; each new
+        call cancels and reschedules the timer. When the timer eventually
+        fires (key activity has settled), only the LAST destination is
+        spoken. This prevents flooding speech-dispatcher with 200+
+        commands/sec which previously deadlocked the speechd client.
+        """
+
+        is_interrupt = args.get("interrupt", False)
+
+        if is_interrupt:
+            now = _time.monotonic()
+            in_burst = (
+                self._coalesce_timer_id is not None
+                or (now - self._last_interrupt_speak_time) < self._COALESCE_BURST_WINDOW
+            )
+
+            if in_burst:
+                # Defer this one; replace any pending coalesce.
+                if self._coalesce_timer_id is not None:
+                    _GLib.source_remove(self._coalesce_timer_id)
+                self._coalesce_pending = (script, obj, dict(args))
+                self._coalesce_timer_id = _GLib.timeout_add(
+                    self._COALESCE_DEFER_MS, self._coalesce_fire,
+                )
+                return
+
+            # First call in a (likely) new burst: speak now and record the time.
+            self._last_interrupt_speak_time = now
 
         where_am_i_type = args.pop("where_am_i_type", None)
         context = self._build_generator_context(where_am_i_type)
         utterances = script.get_speech_generator().generate_speech(obj, context, **args)
         self._speak(utterances)
+
+    def _coalesce_fire(self) -> bool:
+        """Timer callback: speak the latest deferred utterance from a burst."""
+
+        self._coalesce_timer_id = None
+        pending = self._coalesce_pending
+        self._coalesce_pending = None
+        if pending is None:
+            return False  # GLib: one-shot
+
+        script, obj, args = pending
+        # Object may have been destroyed during the burst; bail if so.
+        from .ax_object import AXObject as _AXObject
+        if not _AXObject.is_valid(obj):
+            return False
+
+        self._last_interrupt_speak_time = _time.monotonic()
+        where_am_i_type = args.pop("where_am_i_type", None)
+        context = self._build_generator_context(where_am_i_type)
+        utterances = script.get_speech_generator().generate_speech(obj, context, **args)
+        self._speak(utterances)
+        return False  # GLib: one-shot
 
     def speak_line(
         self,
