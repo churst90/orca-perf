@@ -2970,15 +2970,6 @@ class SpeechPresenter(Extension):
         """Generates speech for obj using the script's speech generator and speaks it."""
 
         where_am_i_type = args.pop("where_am_i_type", None)
-
-        # Honor the interrupt flag from upstream callers (structural
-        # navigation, focus change, etc.). Without this, held keys queue
-        # utterances on speech-dispatcher and the user hears every step of
-        # the navigation rather than the destination. The flag was being
-        # passed through the whole stack and then silently dropped here.
-        if args.get("interrupt", False):
-            speech_manager.get_manager().interrupt_speech()
-
         context = self._build_generator_context(where_am_i_type)
         utterances = script.get_speech_generator().generate_speech(obj, context, **args)
         self._speak(utterances)
