@@ -86,12 +86,17 @@ class AXObject:
 
     # Long-lived caches that survive across events. AT-SPI roles essentially
     # never change during an object's lifetime; parents rarely do; names
-    # change occasionally (~3% of events) and are invalidated on
-    # property-change:accessible-name events. Entries are removed on defunct.
-    # Compounds with the event-scope cache.
+    # change occasionally (~3% of events); states change frequently but each
+    # change is signalled by a state-changed:* event so we can invalidate
+    # reliably. Entries are removed on defunct. Each dict is hard-capped at
+    # _LL_CACHE_MAX entries and cleared wholesale when exceeded to bound
+    # memory in long sessions.
     LONG_LIVED_ROLES: ClassVar[dict[int, Atspi.Role]] = {}
     LONG_LIVED_PARENTS: ClassVar[dict[int, Atspi.Accessible | None]] = {}
     LONG_LIVED_NAMES: ClassVar[dict[int, str]] = {}
+    LONG_LIVED_STATES: ClassVar[dict[int, Atspi.StateSet]] = {}
+
+    _LL_CACHE_MAX = 8000
 
     _lock = threading.Lock()
 
@@ -174,24 +179,43 @@ class AXObject:
     def invalidate_for_event(event_type: str, source: Atspi.Accessible) -> None:
         """Invalidates long-lived cache entries based on an AT-SPI event.
 
-        Called from the event manager before each event is dispatched. Most
-        events leave the long-lived caches alone; defunct events remove the
-        object entirely; name-change events drop only the cached name.
+        Called from the event manager before each event is dispatched.
+        Defunct events remove the object entirely. Property-change and
+        state-change events drop only the affected entry so the rest of the
+        cache stays warm.
         """
 
         if not event_type:
             return
+        key = hash(source)
         if event_type == "object:defunct":
-            key = hash(source)
             with AXObject._lock:
                 AXObject.LONG_LIVED_ROLES.pop(key, None)
                 AXObject.LONG_LIVED_PARENTS.pop(key, None)
                 AXObject.LONG_LIVED_NAMES.pop(key, None)
+                AXObject.LONG_LIVED_STATES.pop(key, None)
                 AXObject.KNOWN_DEAD[key] = True
         elif event_type == "object:property-change:accessible-name":
-            key = hash(source)
             with AXObject._lock:
                 AXObject.LONG_LIVED_NAMES.pop(key, None)
+        elif event_type == "object:property-change:accessible-role":
+            with AXObject._lock:
+                AXObject.LONG_LIVED_ROLES.pop(key, None)
+        elif event_type == "object:property-change:accessible-parent":
+            with AXObject._lock:
+                AXObject.LONG_LIVED_PARENTS.pop(key, None)
+        elif event_type.startswith("object:state-changed:"):
+            with AXObject._lock:
+                AXObject.LONG_LIVED_STATES.pop(key, None)
+
+    @staticmethod
+    def _ll_store(d: dict, key: int, value) -> None:
+        """Stores a value in a long-lived cache dict, enforcing the size cap."""
+
+        with AXObject._lock:
+            if len(d) >= AXObject._LL_CACHE_MAX:
+                d.clear()
+            d[key] = value
 
     @staticmethod
     def _clear_stored_data() -> None:
@@ -679,8 +703,7 @@ class AXObject:
             tokens = ["AXObject:", obj, "claims to have no parent"]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
-        with AXObject._lock:
-            AXObject.LONG_LIVED_PARENTS[key] = parent
+        AXObject._ll_store(AXObject.LONG_LIVED_PARENTS, key, parent)
         if cache is not None:
             cache[key] = parent
             AXObject._record_cache_miss()
@@ -842,8 +865,7 @@ class AXObject:
 
         AXObject._set_known_dead_status(obj, False)
 
-        with AXObject._lock:
-            AXObject.LONG_LIVED_ROLES[key] = role
+        AXObject._ll_store(AXObject.LONG_LIVED_ROLES, key, role)
         if cache is not None:
             cache[key] = role
             AXObject._record_cache_miss()
@@ -936,8 +958,7 @@ class AXObject:
         # Only cache non-empty names; empty string could mean "not yet set"
         # in some toolkit implementations and we don't want to lock that in.
         if name:
-            with AXObject._lock:
-                AXObject.LONG_LIVED_NAMES[key] = name
+            AXObject._ll_store(AXObject.LONG_LIVED_NAMES, key, name)
         if cache is not None:
             cache[key] = name
             AXObject._record_cache_miss()
@@ -1130,13 +1151,25 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return Atspi.StateSet()
 
+        key = hash(obj)
         cache = getattr(AXObject._event_cache_tls, "state_sets", None)
-        if cache is not None:
-            key = hash(obj)
-            if key in cache:
-                AXObject._record_cache_hit()
-                return cache[key]
 
+        # Layer 1: event-scope cache
+        if cache is not None and key in cache:
+            AXObject._record_cache_hit()
+            return cache[key]
+
+        # Layer 2: long-lived state cache. Invalidated on any
+        # object:state-changed:* event for this object.
+        with AXObject._lock:
+            ll_state = AXObject.LONG_LIVED_STATES.get(key)
+        if ll_state is not None:
+            if cache is not None:
+                cache[key] = ll_state
+            AXObject._record_ll_hit()
+            return ll_state
+
+        # Layer 3: AT-SPI call
         try:
             state_set = Atspi.Accessible.get_state_set(obj)
         except GLib.GError as error:
@@ -1151,6 +1184,7 @@ class AXObject:
 
         AXObject._set_known_dead_status(obj, False)
 
+        AXObject._ll_store(AXObject.LONG_LIVED_STATES, key, state_set)
         if cache is not None:
             cache[key] = state_set
             AXObject._record_cache_miss()
