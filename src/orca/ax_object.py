@@ -102,12 +102,11 @@ class AXObject:
 
     _LL_CACHE_MAX = 8000
 
-    # DIAGNOSTIC: disable long-lived name cache to test whether it is
-    # responsible for the wrong-window-title-on-Alt-Tab behavior seen with
-    # Chromium-based browsers. Flip back to False once the question is
-    # resolved. When True, get_name() bypasses the LL layer; event-scope
-    # cache still works within a single event.
-    _NAME_LL_CACHE_DISABLED = True
+    # Long-lived name cache enabled. The held-key coalesce fix in
+    # structural_navigator (ccda9d591) was the actual cure for the
+    # wrong-window-title-on-Alt-Tab behavior, not this cache. Reclaims
+    # ~3 percentage points of steady-state hit rate (95% -> 98%).
+    _NAME_LL_CACHE_DISABLED = False
 
     _lock = threading.Lock()
 
