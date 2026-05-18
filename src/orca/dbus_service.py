@@ -24,6 +24,8 @@ import ast
 import contextlib
 import enum
 import inspect
+import threading
+import time
 import types
 import typing
 import xml.etree.ElementTree as ET
@@ -40,6 +42,47 @@ from . import (  # pylint: disable=no-name-in-module
     debug,
     orca_platform,
 )
+
+
+# Diagnostic call-rate monitor. The session bus is user-trusted so this is
+# not a security control -- but a buggy peer (or a misbehaving extension)
+# can flood a setter or command and cause speech jitter that's otherwise
+# hard to attribute. Counts calls per method in a 1-second sliding window;
+# when the rate exceeds _RATE_WARN_THRESHOLD, emits a single WARNING log
+# message and rate-limits subsequent warnings for the same method to one
+# per _RATE_WARN_COOLDOWN seconds. Never drops or delays calls.
+_RATE_WARN_THRESHOLD = 50  # calls/sec per method before we warn
+_RATE_WARN_WINDOW = 1.0
+_RATE_WARN_COOLDOWN = 5.0
+_rate_counters: dict[str, list[float]] = {}
+_rate_last_warn: dict[str, float] = {}
+_rate_lock = threading.Lock()
+
+
+def _note_dbus_call(method_name: str) -> None:
+    """Records a call to method_name; emits a throttled WARN if rate is excessive."""
+
+    now = time.monotonic()
+    with _rate_lock:
+        window = _rate_counters.setdefault(method_name, [])
+        # Drop timestamps outside the sliding window.
+        cutoff = now - _RATE_WARN_WINDOW
+        while window and window[0] < cutoff:
+            window.pop(0)
+        window.append(now)
+        if len(window) <= _RATE_WARN_THRESHOLD:
+            return
+        last = _rate_last_warn.get(method_name, 0.0)
+        if now - last < _RATE_WARN_COOLDOWN:
+            return
+        _rate_last_warn[method_name] = now
+        rate = len(window) / _RATE_WARN_WINDOW
+    msg = (
+        f"DBUS SERVICE: {method_name} called {rate:.0f}/sec "
+        f"(threshold {_RATE_WARN_THRESHOLD}/sec). Diagnostic warning only; "
+        f"no calls dropped."
+    )
+    debug.print_message(debug.LEVEL_WARNING, msg, True)
 
 
 def command(func):
@@ -412,6 +455,7 @@ class _InterfaceBuilder:
         """Builds a D-Bus method (notify_user) -> bool wrapping an @command method."""
 
         def Method(_self, notify_user: bool = True) -> bool:  # pylint: disable=invalid-name
+            _note_dbus_call(method.__name__)
             # Local imports break a circular import: dbus_service is imported by speech_manager,
             # and script_manager (transitively) imports speech_manager.
             from . import (  # pylint: disable=import-outside-toplevel
@@ -475,6 +519,7 @@ class _InterfaceBuilder:
         new_sig = inspect.Signature(new_params, return_annotation=return_annotation)
 
         def Method(_self, *args, **kwargs):  # pylint: disable=invalid-name
+            _note_dbus_call(method.__name__)
             from . import (  # pylint: disable=import-outside-toplevel
                 input_event,
                 input_event_manager,
@@ -515,6 +560,7 @@ class _InterfaceBuilder:
             return_annotation = bool
 
         def read(_self, _original=get_method):
+            _note_dbus_call(_original.__name__)
             return _original()
 
         read.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
@@ -535,6 +581,7 @@ class _InterfaceBuilder:
             value_type = bool
 
         def write(_self, value, _original=set_method):
+            _note_dbus_call(_original.__name__)
             _original(value)
 
         write.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
