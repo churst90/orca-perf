@@ -22,7 +22,7 @@ This branch was forked from upstream `main` at:
 
 ## What the patches change
 
-This branch carries two categories of patches:
+This branch carries three categories of patches:
 
 **Performance / stability (commits `d1b418a19` through `713b9cc29`)**
 
@@ -31,6 +31,32 @@ and across events; a per-document cache of structural-navigation match
 lists (headings, links, etc.); and held-key coalescing so that key
 auto-repeat does not flood `script.present_object()` with overlapping
 scroll-and-speech calls.
+
+**Round-2 perf (commits `2176c4952` through `7267c32d3`)**
+
+Five follow-on patches taken from the per-subsystem ANALYSIS docs:
+- `2176c4952` — re-enable the long-lived name cache (the held-key
+  coalesce fix in `ccda9d591` was the actual cure for the
+  wrong-window-title-on-Alt-Tab issue, not the name-cache disable).
+- `41760ec68` — batch the language-attribute lookup in
+  `spell_item` / `spell_phonetically`. Was one AT-SPI IPC per
+  character; now one per language run (typically one for the whole
+  word on monolingual input).
+- `4bceeca8a` — pre-warm AT-SPI caches at `Script.activate()`. Touches
+  the active window and up to 50 immediate children, populating the
+  LL role and name caches so the first focus event after Alt-Tab
+  doesn't pay full discovery cost.
+- `034f86369` — replace the 60-second blanket `AXUtilitiesEvent`
+  wipe with event-driven eviction via `evict_object()`. Hooked from
+  `event_manager` on `window:destroy` and
+  `object:children-changed:remove`. Periodic safety wipe relaxed to
+  10 minutes.
+- `7267c32d3` — defer structural-nav cache drops by 150ms after
+  children-changed events. Dynamic pages (Gmail, Twitter, Reddit)
+  fire dense bursts of these; previously every event in the burst
+  dropped the per-root match cache, so every H/K/B press during the
+  burst paid a full tree walk. Now the cache keeps serving across
+  the burst and is dropped once after it settles.
 
 **Speech-prefs correctness (commit `e05d8868d`)**
 
@@ -176,10 +202,10 @@ worth picking up next:
   was reaching back into dconf in the first place. The runtime-override
   patch routes around the symptom; the underlying guard should be
   broadened to "any window owned by the Orca app while prefs is open."
-- **`AXObject._NAME_LL_CACHE_DISABLED = True` was a diagnostic, not a
-  fix.** With the held-key coalescing in place, the wrong-window-title
-  symptom doesn't recur, but the name cache may be re-enableable. Worth
-  toggling the flag back on and stress-testing Alt-Tab.
+- **`AXObject._NAME_LL_CACHE_DISABLED`** — resolved in `2176c4952`,
+  cache is back on. Held-key coalesce in `ccda9d591` was the actual
+  fix for the wrong-window-title symptom. Leaving this note as a
+  pointer for anyone reading older commit messages.
 - **Long-lived StateSet cache reverted (`6445b86e4`).** The right
   approach is probably to cache primitive state bits (a frozenset of
   ints) instead of the live `Atspi.StateSet` object. Not attempted yet.
@@ -192,6 +218,38 @@ worth picking up next:
   volume sliders set runtime values via `set_runtime_value` and don't
   get reverted either; they'll leak past Cancel until Orca restarts.
   Same fix pattern as `revert_changes` in `VoicesPreferencesGrid`.
+
+## Next-on-deck (after the round-2 commits above)
+
+The biggest remaining wins, in rough priority order — these have not
+been started yet:
+
+- **Web `DocumentNavigationIndex`** (full incremental index, not just
+  the deferred-drop debounce we have now). Build a per-document
+  ordered list of headings/links/forms/etc. on page load; mutate
+  it on children-changed:add/:remove events instead of dropping the
+  whole match list. Converts H/K/B keypresses from O(tree) to
+  O(log n). Multi-day, biggest perceivable web responsiveness win
+  available. WEB analysis #1.
+- **Caret-order pre-computation** on page load (WEB #2). Same idea
+  but for arrow-key navigation through text.
+- **Lazy descendant-ancestor checks** (CORE #4). Replace eager
+  `IS_DOCUMENT_DESCENDANT` etc. with on-demand walks + memoization.
+  15-25% cache memory reduction, cheaper wipes.
+- **Consolidate libatspi cache-clear calls** (CORE #6). Batch the
+  scattered `Atspi.Accessible.clear_cache()` invocations.
+- **`_latest_event` dict race condition** in `event_manager.py`.
+  Latent crash source under heavy event load.
+- **Output module sync TODO** at `speechdispatcherfactory.py:576`.
+  Switching the output module updates speechd but not `self._id`.
+
+Deferred / not recommended:
+- **Full Spiel migration** — would give 20-30% speech-latency
+  reduction by eliminating speech-dispatcher, but Spiel has no Voxin
+  provider, so the author would lose Voxin. Revisit when (if) one
+  ships.
+- **AT-SPI batch query API** (`get_attributes_batch` proposed to
+  upstream Atspi). Multi-quarter upstream effort.
 
 ## License and upstream
 
