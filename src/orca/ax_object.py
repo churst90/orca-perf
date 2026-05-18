@@ -242,9 +242,13 @@ class AXObject:
         while True:
             time.sleep(AXObject.HUNG_TIMEOUT)
             now = time.monotonic()
-            for key in list(AXObject.HUNG_OBJECTS):
-                if now - AXObject.HUNG_OBJECTS[key] >= AXObject.HUNG_TIMEOUT:
-                    del AXObject.HUNG_OBJECTS[key]
+            with AXObject._lock:
+                expired = [
+                    key for key, ts in AXObject.HUNG_OBJECTS.items()
+                    if now - ts >= AXObject.HUNG_TIMEOUT
+                ]
+                for key in expired:
+                    AXObject.HUNG_OBJECTS.pop(key, None)
 
     @staticmethod
     def _clear_all_dictionaries(reason: str = "") -> None:
@@ -383,13 +387,20 @@ class AXObject:
     ) -> bool:
         """Returns True if obj or its app is hung, propagating obj-hung to app."""
 
-        obj_hung = obj is not None and hash(obj) in AXObject.HUNG_OBJECTS
-        app_hung = app is not None and hash(app) in AXObject.HUNG_OBJECTS
-        if obj_hung and app is not None and not app_hung:
-            tokens = ["AXObject: Marking", app, "as hung due to hung source"]
-            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            AXObject.HUNG_OBJECTS[hash(app)] = AXObject.HUNG_OBJECTS[hash(obj)]
-            app_hung = True
+        # The prune thread can delete keys between our membership test
+        # and the timestamp read at line "HUNG_OBJECTS[hash(app)] = ..." below,
+        # so all access is under _lock. .get() with sentinel avoids KeyError
+        # on the timestamp copy when the obj entry was just pruned.
+        with AXObject._lock:
+            obj_ts = AXObject.HUNG_OBJECTS.get(hash(obj)) if obj is not None else None
+            app_ts = AXObject.HUNG_OBJECTS.get(hash(app)) if app is not None else None
+            obj_hung = obj_ts is not None
+            app_hung = app_ts is not None
+            if obj_hung and app is not None and not app_hung:
+                tokens = ["AXObject: Marking", app, "as hung due to hung source"]
+                debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+                AXObject.HUNG_OBJECTS[hash(app)] = obj_ts
+                app_hung = True
         return obj_hung or app_hung
 
     @staticmethod
@@ -428,7 +439,8 @@ class AXObject:
             debug.print_message(debug.LEVEL_INFO, msg, True)
         elif "The process appears to be hung" in error_string:
             debug.print_message(debug.LEVEL_INFO, msg, True)
-            AXObject.HUNG_OBJECTS[hash(obj)] = time.monotonic()
+            with AXObject._lock:
+                AXObject.HUNG_OBJECTS[hash(obj)] = time.monotonic()
             return
         elif re.search(r"accessible/\d+ does not exist", error_string):
             msg = msg.replace(error_string, "object no longer exists")
