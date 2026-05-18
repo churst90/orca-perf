@@ -573,15 +573,27 @@ class SpeechServer(speechserver.SpeechServer):
     def set_output_module(self, module_id: str) -> None:
         """Set the speech output module to the specified provider."""
 
-        # TODO - JD: This updates the output module, but not the the value of self._id.
-        # That might be desired (e.g. self._id impacts what is shown in Orca preferences),
-        # but it can be confusing.
+        # self._id is not mutated -- it is the key into SpeechServer._active_servers
+        # and changing it would break shutdown cleanup. get_info() picks up the new
+        # module via self._output_module so preferences display stays consistent.
         self._output_module = module_id
         if self._client is not None:
             self._send_command(self._client.set_output_module, module_id)
             self.clear_voice_families_cache()
             # Update the default voice name to match the new module
             self._default_voice_name = guilabels.SPEECH_DEFAULT_VOICE % module_id
+
+    def get_info(self) -> list[str]:
+        """Returns [name, id] of the current speech server.
+
+        Overrides the base implementation so the id reported to preferences
+        tracks the live output module when set_output_module() has changed
+        it after init. self._id remains the original server identifier for
+        the _active_servers registry.
+        """
+
+        effective_id = self._output_module or self._id
+        return [self._SERVER_NAMES.get(effective_id, effective_id), effective_id]
 
     def stop(self) -> None:
         self._cancel()
