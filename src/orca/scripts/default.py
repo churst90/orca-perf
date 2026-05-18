@@ -84,16 +84,18 @@ from orca.ax_object import AXObject
 from orca.ax_selection import AXSelection
 from orca.ax_text import AXText
 from orca.ax_utilities import AXUtilities
-from orca.ax_utilities_event import TextEventReason
+from orca.ax_utilities_event import AXUtilitiesEvent, TextEventReason
 from orca.ax_utilities_text import TextUnit
 from orca.command import BrailleCommand, KeyboardCommand
+
+import gi
+
+gi.require_version("Atspi", "2.0")
+from gi.repository import GLib  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    import gi
-
-    gi.require_version("Atspi", "2.0")
     from gi.repository import Atspi
 
 
@@ -473,6 +475,34 @@ class Script(script.Script):
 
         table_navigator.get_navigator().refresh_enabled_state()
         command_manager.get_manager().activate_commands(f"activated {self.name}")
+
+        self._prewarm_window_caches()
+
+    _PREWARM_CHILD_LIMIT = 50
+
+    def _prewarm_window_caches(self) -> None:
+        """Populates AX caches for the active window and its immediate children.
+
+        Called at script activation so the first focus event after Alt-Tab
+        does not pay full discovery cost. Bounded so a window with many
+        children cannot stall activation; AT-SPI errors are silenced
+        because pre-warming must never break the activation path.
+        """
+
+        window = focus_manager.get_manager().get_active_window()
+        if window is None or AXObject.is_dead(window):
+            return
+        try:
+            AXUtilitiesEvent.save_object_info_for_events(window)
+            warmed = 0
+            for child in AXObject.iter_children(window):
+                if warmed >= self._PREWARM_CHILD_LIMIT:
+                    break
+                AXObject.get_role(child)
+                AXObject.get_name(child)
+                warmed += 1
+        except GLib.GError:
+            pass
 
     def deactivate(self) -> None:
         """Called when this script is deactivated."""
