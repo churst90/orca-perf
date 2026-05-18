@@ -49,27 +49,39 @@ read on the existing task queue. Re-uses the existing in-flight
 timeout (5s) and `_mark_brlapi_dead` path. A hung brltty is now
 discovered during idle time instead of stalling the next real write.
 
-### B. Worth fixing eventually, lower priority
+### B. Round-5 outcomes
 
-**B1. Sound player GStreamer bus watches not unregistered.**
-`sound.py:177-178, 183` register signal watches in `__init__` but
-no destructor unregisters them. Probably masked by Python GC on
-normal shutdown; matters on crash or force-kill. **CLEAN, SMALL.**
+**B1. Sound player GStreamer bus watches not unregistered** — *DONE
+in `282fa31ed`.* Player.init() called `bus.add_signal_watch()` and
+`bus.connect("message", ...)` on both the playbin and the custom
+tone pipeline, but shutdown() only set the elements to NULL state.
+Track bus references and handler ids; disconnect handlers and call
+`remove_signal_watch()` in shutdown(); drop element refs so
+GStreamer can finalize.
 
-**B2. Input event manager `_paused` flag not synchronized.**
-`input_event_manager.py:64-69`. Technically safe on CPython due to
-GIL but the intent is unclear and the design is fragile across
-implementations. **CLEAN, SMALL.**
+**B2. Input event manager `_paused` flag not synchronized** — *NOT
+A BUG after audit.* `pause_key_watcher` is only called from
+`event_manager.pause_queuing` (main thread), and
+`process_keyboard_event` runs via GObject `key-pressed`/`key-released`
+signal dispatch (also main thread). Single-threaded access; no race
+possible. The agent's "fragile across implementations" hedge was the
+warning sign here. Skipped.
 
-**B3. Profile rename non-atomic.** `gsettings_registry.py:549-572`
-does copy-then-reset. Interrupting between the two leaves dconf
-containing both old and new profile keys. **BUG, SMALL.**
+**B3. Profile rename non-atomic** — *DONE in `9b0b9e039`.*
+`rename_profile()` was a three-phase sequence (copy each schema,
+write metadata on new, reset old) with no error handling between
+phases. Wrap copy + metadata in try/except; on failure, reset the
+partial new profile so the user keeps the old one, then re-raise.
+Only reset the old after both phases succeed. Doesn't make dconf
+transactional but auto-cleans the common in-process failure modes.
 
-**B4. Speechd reconnect-on-socket-close.** Orca's reconnect logic
-fires lazily on the next speak attempt. If speechd is restarted
-mid-session, the gap between socket close and next speak is dead
-air. **CLEAN, SMALL.** Fix shape: socket-level epoll/EOF detection
-on the SSIP client, proactive reconnect.
+**B4. Speechd reconnect-on-socket-close** — *DONE in `8be6260cb`.*
+Used the same probe pattern as the BrlAPI fix in `bf34212fd`. A
+30-second cheap SSIP round-trip (`get_output_module`) goes through
+the existing `_send_command` path, which already turns
+`SSIPCommunicationError` into a `reset()` + `_init()` cycle. So if
+speech-dispatcher restarts while Orca is idle, the probe discovers
+it within 30 seconds and reconnects before the user's next speak.
 
 ### C. Already known / on BRANCH_INFO.md "Open work" list
 
