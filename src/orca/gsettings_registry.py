@@ -547,27 +547,45 @@ class GSettingsRegistry:
                 writer(key, value)
 
     def rename_profile(self, old_name: str, new_label: str, new_internal_name: str) -> None:
-        """Renames a profile by copying all keys to the new path and resetting the old."""
+        """Renames a profile by copying all keys to the new path and resetting the old.
+
+        The copy + metadata-write + old-reset sequence is not transactional
+        in dconf. If anything in the copy phase raises (rare -- bad schema,
+        gsettings sync failure, OOM), the new profile would be left
+        half-populated while the old one is still intact. Roll back any
+        partial new-profile state in that case so the user keeps the old
+        profile and a single retry is enough to recover. The old profile is
+        only reset after the new one is fully written.
+        """
 
         old_profile = GSettingsRegistry.sanitize_gsettings_path(old_name)
         new_profile = GSettingsRegistry.sanitize_gsettings_path(new_internal_name)
 
-        for schema_name in self._schemas:
-            if schema_name == "voice":
-                for voice_type in VOICE_TYPES:
-                    vt = GSettingsRegistry.sanitize_gsettings_path(voice_type)
-                    old_gs = self.get_settings("voice", old_profile, self.voice_set_sub_path(vt))
-                    new_gs = self.get_settings("voice", new_profile, self.voice_set_sub_path(vt))
-                    self.copy_user_keys(old_gs, new_gs)
-                continue
-            old_gs = self.get_settings(schema_name, old_profile)
-            new_gs = self.get_settings(schema_name, new_profile)
-            self.copy_user_keys(old_gs, new_gs)
+        try:
+            for schema_name in self._schemas:
+                if schema_name == "voice":
+                    for voice_type in VOICE_TYPES:
+                        vt = GSettingsRegistry.sanitize_gsettings_path(voice_type)
+                        old_gs = self.get_settings("voice", old_profile, self.voice_set_sub_path(vt))
+                        new_gs = self.get_settings("voice", new_profile, self.voice_set_sub_path(vt))
+                        self.copy_user_keys(old_gs, new_gs)
+                    continue
+                old_gs = self.get_settings(schema_name, old_profile)
+                new_gs = self.get_settings(schema_name, new_profile)
+                self.copy_user_keys(old_gs, new_gs)
 
-        metadata_gs = self.get_settings("metadata", new_profile)
-        if metadata_gs is not None:
-            metadata_gs.set_string("display-name", new_label)
-            metadata_gs.set_string("internal-name", new_internal_name)
+            metadata_gs = self.get_settings("metadata", new_profile)
+            if metadata_gs is not None:
+                metadata_gs.set_string("display-name", new_label)
+                metadata_gs.set_string("internal-name", new_internal_name)
+        except (GLib.GError, AttributeError, TypeError, ValueError) as error:
+            msg = (
+                f"GSETTINGS: rename_profile from {old_name!r} to {new_internal_name!r} "
+                f"failed mid-copy ({error}); rolling back partial new-profile state."
+            )
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            self.reset_profile(new_internal_name)
+            raise
 
         self.reset_profile(old_name)
 
