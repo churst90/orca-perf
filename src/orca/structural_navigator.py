@@ -122,23 +122,32 @@ class StructuralNavigator(Extension):
         # accessibles. Invalidated when the tree under root changes -- see
         # invalidate_nav_cache_for_event().
         self._nav_cache: dict[tuple[int, str], list[Atspi.Accessible]] = {}
+        # Parallel to _nav_cache: stores a zero-arg callable that recomputes
+        # the value for the same key. Used by the background rebuild path
+        # below so we can refresh stale entries without dropping them first.
+        self._nav_cache_rebuilders: dict[
+            tuple[int, str], Callable[[], list[Atspi.Accessible]]
+        ] = {}
         self._nav_cache_lock = threading.Lock()
         self._NAV_CACHE_MAX = 200
         self._nav_cache_hits = 0
         self._nav_cache_misses = 0
 
-        # Deferred-drop state. Children-changed events from a dynamic page
+        # Deferred-rebuild state. Children-changed events from a dynamic page
         # (live regions, infinite scroll, ad refresh) often fire in dense
         # bursts; dropping the cache synchronously on each one means every
-        # H/K/B keypress during the burst pays a full tree walk. Instead we
-        # mark affected keys stale, schedule a single 150ms GLib timer, and
-        # drop the entries when the burst settles. Reads keep serving the
-        # cached lists in the meantime -- worst case the user jumps to an
-        # element that just got removed and AT-SPI defunct detection
-        # recovers on the next press.
+        # H/K/B keypress during the burst pays a full tree walk. We mark
+        # affected keys stale, schedule a single 150ms GLib timer, and when
+        # it fires, schedule each stale entry's rebuild on idle priority.
+        # Reads keep serving the cached lists in the meantime, and by the
+        # time the next H/K press lands the rebuild is usually done so the
+        # press is served instantly from the now-fresh cache.
         self._nav_cache_stale_keys: set[tuple[int, str]] = set()
         self._nav_cache_drop_timer_id: int | None = None
         self._NAV_CACHE_DROP_DELAY_MS = 150
+        # Keys that are queued for idle rebuild. Bounds the work even if
+        # bursts keep marking entries stale faster than idle ticks fire.
+        self._nav_cache_rebuilding: set[tuple[int, str]] = set()
 
         # Coalesce-with-delay state for held-key structural nav. Each
         # script.present_object() call below in _present_object does a
@@ -179,7 +188,9 @@ class StructuralNavigator(Extension):
         with self._nav_cache_lock:
             if len(self._nav_cache) >= self._NAV_CACHE_MAX:
                 self._nav_cache.clear()
+                self._nav_cache_rebuilders.clear()
             self._nav_cache[full_key] = result
+            self._nav_cache_rebuilders[full_key] = compute_fn
         self._nav_cache_misses += 1
         self._log_nav_cache(cache_key, hit=False, n=len(result), elapsed_ms=elapsed_ms)
         return result
@@ -221,7 +232,9 @@ class StructuralNavigator(Extension):
                 doomed = [k for k in self._nav_cache if k[0] == source_hash]
                 for k in doomed:
                     self._nav_cache.pop(k, None)
+                    self._nav_cache_rebuilders.pop(k, None)
                     self._nav_cache_stale_keys.discard(k)
+                    self._nav_cache_rebuilding.discard(k)
             return
 
         if not event_type.startswith("object:children-changed"):
@@ -250,15 +263,69 @@ class StructuralNavigator(Extension):
             )
 
     def _drop_stale_keys(self) -> bool:
-        """GLib timer callback: drops keys marked stale during a burst."""
+        """GLib timer callback: schedule background rebuild for stale keys.
+
+        Instead of dropping entries (which would force the next H/K press
+        to pay the full tree walk synchronously), schedule each stale
+        key's recompute on idle priority. The cache keeps serving the
+        old list to any reads in between. Once the idle handler runs
+        compute_fn and atomically swaps the new list in, subsequent
+        reads see the fresh result with no user-visible recompute cost.
+        """
 
         with self._nav_cache_lock:
             stale = list(self._nav_cache_stale_keys)
             self._nav_cache_stale_keys.clear()
             self._nav_cache_drop_timer_id = None
+
+            # Build the list of (key, rebuilder) pairs we can refresh
+            # in place. Drop keys with no rebuilder -- those were never
+            # populated via _cached_or_compute (defunct edge case).
+            to_rebuild: list[tuple[tuple[int, str], Callable[[], list[Atspi.Accessible]]]] = []
             for k in stale:
-                self._nav_cache.pop(k, None)
-        self._log_nav_cache("drop", hit=False, n=len(stale))
+                rebuilder = self._nav_cache_rebuilders.get(k)
+                if rebuilder is None:
+                    self._nav_cache.pop(k, None)
+                    continue
+                if k in self._nav_cache_rebuilding:
+                    continue
+                self._nav_cache_rebuilding.add(k)
+                to_rebuild.append((k, rebuilder))
+
+        for k, rebuilder in to_rebuild:
+            GLib.idle_add(self._rebuild_cache_entry, k, rebuilder)
+        self._log_nav_cache("schedule_rebuild", hit=False, n=len(to_rebuild))
+        return False  # one-shot
+
+    def _rebuild_cache_entry(
+        self,
+        full_key: tuple[int, str],
+        rebuilder: Callable[[], list[Atspi.Accessible]],
+    ) -> bool:
+        """GLib idle callback: recompute one cache entry and swap it in."""
+
+        try:
+            t0 = time.monotonic()
+            fresh = rebuilder()
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+        except Exception:  # pylint: disable=broad-except
+            # If the rebuilder raises (root went defunct mid-rebuild,
+            # toolkit threw), drop the entry so the next read does the
+            # work on the foreground path with proper error handling.
+            with self._nav_cache_lock:
+                self._nav_cache.pop(full_key, None)
+                self._nav_cache_rebuilders.pop(full_key, None)
+                self._nav_cache_rebuilding.discard(full_key)
+            return False
+
+        with self._nav_cache_lock:
+            # If the entry was evicted while we were rebuilding (defunct
+            # event hit it, cache wraparound), discard the result rather
+            # than re-inserting -- another reader has moved on.
+            if full_key in self._nav_cache_rebuilding:
+                self._nav_cache[full_key] = fresh
+                self._nav_cache_rebuilding.discard(full_key)
+        self._log_nav_cache(full_key[1], hit=False, n=len(fresh), elapsed_ms=elapsed_ms)
         return False  # one-shot
 
     # pylint: disable-next=too-many-locals
