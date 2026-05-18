@@ -131,6 +131,7 @@ class AXObject:
         AXObject._event_cache_tls.parents = {}
         AXObject._event_cache_tls.names = {}
         AXObject._event_cache_tls.state_sets = {}
+        AXObject._event_cache_tls.cleared = set()
 
         log_perf = _PERF_LOG_ENABLED
         if log_perf:
@@ -163,6 +164,7 @@ class AXObject:
             AXObject._event_cache_tls.parents = None
             AXObject._event_cache_tls.names = None
             AXObject._event_cache_tls.state_sets = None
+            AXObject._event_cache_tls.cleared = None
 
     @staticmethod
     def _record_cache_hit() -> None:
@@ -1205,6 +1207,23 @@ class AXObject:
 
         if obj is None:
             return
+
+        # Suppress non-recursive duplicates within a single event scope.
+        # Multiple handlers in one event commonly call clear_cache on the
+        # same object (locus-of-focus change, on-screen check, scroll
+        # confirm). After the first call libatspi's cache is empty for
+        # this obj; intervening get_* calls are reads that don't repopulate
+        # remote state, so a second clear in the same handler is a D-Bus
+        # round-trip to no effect. Recursive clears are not suppressed --
+        # they affect descendants and the descendants may have been
+        # touched between the first and second call.
+        if not recursive:
+            cleared = getattr(AXObject._event_cache_tls, "cleared", None)
+            if cleared is not None:
+                key = hash(obj)
+                if key in cleared:
+                    return
+                cleared.add(key)
 
         tokens = ["AXObject: Clearing AT-SPI cache on", obj, f"Recursive: {recursive}."]
         if reason:
