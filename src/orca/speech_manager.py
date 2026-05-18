@@ -458,6 +458,36 @@ class VoicesPreferencesGrid(preferences_grid_base.PreferencesGridBase):
         self._has_unsaved_changes = False
         self.refresh()
 
+    @staticmethod
+    def _get_combo_value(combo: Gtk.ComboBox, fallback: str) -> str:
+        """Returns the selected string from a single-column ComboBox, or fallback."""
+
+        if combo is None:
+            return fallback
+        model = combo.get_model()
+        active = combo.get_active()
+        if model is None or active < 0:
+            return fallback
+        return str(model[active][0])
+
+    def revert_changes(self) -> None:
+        """Discard any in-prefs runtime overrides and restore live state from dconf.
+
+        Called when the user clicks Cancel. Without this, a runtime override set
+        by _on_speech_synthesizer_changed would stick past dialog close, and
+        subsequent update_synthesizer() calls would re-apply the cancelled choice
+        even though dconf still holds the previous value.
+        """
+
+        registry = gsettings_registry.get_registry()
+        registry.remove_runtime_value(
+            SpeechManager.SPEECH_SCHEMA,
+            SpeechManager.KEY_SYNTHESIZER,
+        )
+        # Re-apply the (now authoritative) dconf value to the live server.
+        self._manager.update_synthesizer()
+        self._has_unsaved_changes = False
+
     def save_settings(self) -> dict[str, dict | list | int | str | bool]:
         """Save settings and return a dictionary of the current values for those settings."""
 
@@ -465,8 +495,18 @@ class VoicesPreferencesGrid(preferences_grid_base.PreferencesGridBase):
             "voices": {vt: dict(acss) for vt, acss in self._voices.items()},
         }
 
-        result[SpeechManager.KEY_SPEECH_SERVER] = self._manager.get_current_server()
-        result[SpeechManager.KEY_SYNTHESIZER] = self._manager.get_current_synthesizer()
+        # Read synthesizer + server choices from the combo widgets (the user's
+        # actual selection in the dialog), not from server.get_output_module()
+        # or get_factory_name(). The live speech-dispatcher state can be stale:
+        # update_synthesizer() fires on every script.activate() and forcibly
+        # re-applies whatever dconf says, which clobbers the user's pending
+        # combo selection. The combo is the source of truth for "what to save."
+        result[SpeechManager.KEY_SPEECH_SERVER] = self._get_combo_value(
+            self._speech_systems_combo, self._manager.get_current_server()
+        )
+        result[SpeechManager.KEY_SYNTHESIZER] = self._get_combo_value(
+            self._speech_synthesizers_combo, self._manager.get_current_synthesizer()
+        )
         result[SpeechManager.KEY_SPEECH_SERVER_FACTORY] = self._manager.get_speech_server_factory()
 
         model = self._punctuation_combo.get_model()
@@ -1121,6 +1161,17 @@ class VoicesPreferencesGrid(preferences_grid_base.PreferencesGridBase):
         tree_iter = model.get_iter(active)
         synth_name = model.get_value(tree_iter, 0)
 
+        # Register a runtime override so update_synthesizer() — which fires on
+        # every script.activate() call from default.py, including focus moves
+        # within the prefs dialog and its child dialogs — reads the user's
+        # pending choice instead of the dconf value, which won't be written
+        # until save. Mirrors the pattern in _on_punctuation_changed and
+        # _on_capitalization_changed.
+        gsettings_registry.get_registry().set_runtime_value(
+            SpeechManager.SPEECH_SCHEMA,
+            SpeechManager.KEY_SYNTHESIZER,
+            synth_name,
+        )
         self._manager.set_current_synthesizer(synth_name)
 
         self._voice_families = self._manager.get_voice_families()
