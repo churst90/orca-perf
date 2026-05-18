@@ -51,6 +51,7 @@ from . import (
 from .ax_object import AXObject
 from .ax_utilities import AXUtilities
 from .ax_utilities_debugging import AXUtilitiesDebugging
+from .ax_utilities_event import AXUtilitiesEvent
 
 if TYPE_CHECKING:
     from .scripts import default
@@ -948,6 +949,11 @@ class EventManager:
 
         if event_type.startswith("window:") and event_type.endswith("destroy"):
             script_mgr.reclaim_scripts()
+            AXUtilitiesEvent.evict_object(event.source)
+        elif event_type.startswith("object:children-changed:remove"):
+            removed = getattr(event, "any_data", None)
+            if removed is not None:
+                AXUtilitiesEvent.evict_object(removed)
 
         if AXUtilities.is_iconified(event.source):
             tokens = ["EVENT MANAGER: Ignoring iconified object:", event.source]

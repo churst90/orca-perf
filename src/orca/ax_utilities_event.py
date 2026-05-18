@@ -146,13 +146,20 @@ class AXUtilitiesEvent:
         debug.print_message(debug.LEVEL_INFO, msg, True)
         return similarity >= threshold
 
+    # Memory-pressure safety net interval. Event-driven invalidation in
+    # evict_object() handles the common cases (window:destroy,
+    # children-changed:remove). This periodic wipe is the long-tail backstop
+    # for objects that never trigger a destroy event we hook -- raised from
+    # 60s to 600s so hot baselines survive across reasonable idle periods.
+    _PERIODIC_WIPE_SECONDS: ClassVar[int] = 600
+
     @staticmethod
     def _clear_stored_data() -> None:
         """Clears any data we have cached for objects"""
 
         while True:
-            time.sleep(60)
-            AXUtilitiesEvent._clear_all_dictionaries()
+            time.sleep(AXUtilitiesEvent._PERIODIC_WIPE_SECONDS)
+            AXUtilitiesEvent._clear_all_dictionaries("periodic wipe")
 
     @staticmethod
     def _clear_all_dictionaries(reason: str = "") -> None:
@@ -177,6 +184,29 @@ class AXUtilitiesEvent:
         """Clears all cached information immediately."""
 
         AXUtilitiesEvent._clear_all_dictionaries(reason)
+
+    @staticmethod
+    def evict_object(obj: Atspi.Accessible) -> None:
+        """Drops cached baseline entries for obj (event-driven invalidation).
+
+        Called when an object is known to be gone or about to be gone --
+        window:destroy on the window itself, children-changed:remove on
+        the removed child. The entries would otherwise sit until the
+        periodic wipe runs.
+        """
+
+        if obj is None:
+            return
+        key = hash(obj)
+        AXUtilitiesEvent.LAST_KNOWN_DESCRIPTION.pop(key, None)
+        AXUtilitiesEvent.LAST_KNOWN_NAME.pop(key, None)
+        AXUtilitiesEvent.LAST_KNOWN_CHECKED.pop(key, None)
+        AXUtilitiesEvent.LAST_KNOWN_EXPANDED.pop(key, None)
+        AXUtilitiesEvent.LAST_KNOWN_INDETERMINATE.pop(key, None)
+        AXUtilitiesEvent.LAST_KNOWN_INVALID_ENTRY.pop(key, None)
+        AXUtilitiesEvent.LAST_KNOWN_PRESSED.pop(key, None)
+        AXUtilitiesEvent.LAST_KNOWN_SELECTED.pop(key, None)
+        AXUtilitiesEvent.LAST_KNOWN_VALUE.pop(key, None)
 
     @staticmethod
     def save_object_info_for_events(obj: Atspi.Accessible) -> None:
