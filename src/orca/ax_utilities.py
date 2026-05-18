@@ -677,7 +677,15 @@ class AXUtilities:
         pred: Callable[[Atspi.Accessible], bool],
         inclusive: bool = False,
     ) -> bool:
-        """Returns True if obj (or an ancestor) matches pred."""
+        """Returns True if obj (or an ancestor) matches pred.
+
+        Walks ancestors lazily and caches the answer at every level
+        visited during one walk. Subsequent calls on any intermediate
+        node hit the cache in O(1). The previous implementation walked
+        the chain up to twice (once for the parent's parent-check, once
+        for obj's fall-through find_ancestor) and only stored the answer
+        at the queried node.
+        """
 
         if inclusive and pred(obj):
             return True
@@ -687,25 +695,31 @@ class AXUtilities:
         if rv is not None:
             return rv
 
-        parent = AXObject.get_parent(obj)
-        if parent is not None:
-            parent_hash = hash(parent)
-            parent_rv = cache.get(parent_hash)
-            if parent_rv is False:
-                cache[obj_hash] = False
-                return False
-            if parent_rv is None:
-                parent_rv = (
-                    pred(parent) or AXUtilitiesObject.find_ancestor(parent, pred) is not None
-                )
-                cache[parent_hash] = parent_rv
-                if not parent_rv:
-                    cache[obj_hash] = False
-                    return False
+        # Collect every intermediate node hash so we can cache the
+        # final answer at all of them.
+        visited: list[int] = [obj_hash]
+        current = AXObject.get_parent(obj)
+        result: bool | None = None
 
-        rv = AXUtilitiesObject.find_ancestor(obj, pred) is not None
-        cache[obj_hash] = rv
-        return rv
+        while current is not None:
+            c_hash = hash(current)
+            cached = cache.get(c_hash)
+            if cached is not None:
+                result = cached
+                break
+            if pred(current):
+                cache[c_hash] = True
+                result = True
+                break
+            visited.append(c_hash)
+            current = AXObject.get_parent(current)
+
+        if result is None:
+            result = False
+
+        for v_hash in visited:
+            cache[v_hash] = result
+        return result
 
     @staticmethod
     def is_block_list_descendant(obj: Atspi.Accessible) -> bool:
