@@ -19,40 +19,35 @@ clean candidate for upstream submission.
 
 ### A. Worth verifying then fixing on this branch
 
-**A1. Braille worker race on queue/worker state checks.** `braille.py:569-577`
-and `braille.py:430-433` read `_STATE.brlapi_queue` / `_STATE.brlapi_worker`
-without locking. The Queue itself is thread-safe but the surrounding
-aliveness checks (`.is_alive()`, `is not None`) are not synchronized
-with `_stop_brlapi_worker()`. A task can be enqueued moments after the
-worker has been signaled to stop. **BUG, SMALL.** Fix shape: dedicated
-lock around state-check sequences, or rely on a sentinel value with
-timeout-aware `get()`.
+**A1. Braille worker race on queue/worker state checks** — *NOT A BUG
+after audit.* Closer reading of `braille.py:430-433` and `569-577`
+shows the worker thread never touches `_STATE.*`. The worker operates
+on a local `task_queue` reference passed to `_brlapi_worker_loop`,
+calls `task.func(task.brlapi)`, and defers all state reactions to the
+GLib main thread via `GLib.idle_add`. All `_STATE.brlapi_*` writes
+happen on main. The agent overcalled this finding. Skipped.
 
-**A2. `HUNG_OBJECTS` dict access without lock** (inherited from upstream
-merge `c1d969e25`). `ax_object.py:86` declares
-`HUNG_OBJECTS: ClassVar[dict[int, float]]`. Read at `ax_object.py:246`
-and pruned by a background thread without acquiring `AXObject._lock`.
-Concurrent mutation during iteration raises
-`RuntimeError("dictionary changed size during iteration")` or
-`KeyError`. **BUG, SMALL.** Fix shape: take `AXObject._lock` around
-all `HUNG_OBJECTS` reads and writes, including the prune loop. Good
-candidate for upstream PR since we'd be fixing code we just merged.
+**A2. `HUNG_OBJECTS` dict access without lock** — *DONE in
+`40c404eff`.* Take `AXObject._lock` around all reads, writes, and the
+prune iteration. Switched `check_hung()` to `.get()` with sentinel to
+avoid the membership-then-read race even within the locked section.
+Inherited code from upstream merge `c1d969e25`; this commit is a good
+candidate to send back to her once the synth-revert MR lands.
 
-**A3. D-Bus surface lacks rate limiting / call coalescing.**
-`dbus_service.py:45-105` auto-exposes commands like `interrupt_speech`,
-`set_rate`, `set_pitch` with no throttling. A buggy or hostile peer
-can flood the bus, causing audible speech jitter or speechd-side
-queue backups. **BUG, SMALL.** Fix shape: per-command rate limit
-(e.g. max 10/sec), redundant-call coalescing within a 100ms window
-for setter commands, validate state transitions where applicable.
+**A3. D-Bus surface lacks rate limiting / call coalescing** — *DONE
+as diagnostic in `5d9954ebe`.* On reflection, hard-throttling would
+break legitimate automation and silent setter coalescing would change
+call semantics. Instead added a sliding-window call-rate monitor that
+emits a throttled `WARNING` log when a method exceeds 50 calls/sec.
+Never drops, delays, or coalesces. If the warning fires in real use,
+we'll have a concrete signal to add real throttling; until then, no
+behavior change.
 
-**A4. BrlAPI health probe is missing.** When `brltty` hangs (display
-disconnected, USB glitch, daemon stuck), BrlAPI calls block until the
-hard-coded 5-second timeout. During that window the braille worker
-thread is stuck, queue grows. **BUG, MEDIUM.** Fix shape: periodic
-NoOp probe (every ~5s) on a separate timer; on probe failure,
-proactively disconnect-and-reconnect rather than waiting for the next
-write to fail. Fully Orca-side.
+**A4. BrlAPI health probe is missing** — *DONE in `bf34212fd`.* Added
+a 10-second periodic NoOp probe that enqueues a cheap `displaySize`
+read on the existing task queue. Re-uses the existing in-flight
+timeout (5s) and `_mark_brlapi_dead` path. A hung brltty is now
+discovered during idle time instead of stalling the next real write.
 
 ### B. Worth fixing eventually, lower priority
 
