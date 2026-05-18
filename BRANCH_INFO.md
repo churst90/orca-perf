@@ -58,6 +58,38 @@ Five follow-on patches taken from the per-subsystem ANALYSIS docs:
   burst paid a full tree walk. Now the cache keeps serving across
   the burst and is dropped once after it settles.
 
+**Round-3 perf + correctness (commits `cf34bf0a4` through `740d84192`)**
+
+Five more from the deferred list:
+- `cf34bf0a4` — `SpeechServer.get_info()` in `speechdispatcherfactory.py`
+  now prefers the live `_output_module` over the construction-time
+  `self._id`, so the preferences display tracks the running output
+  module after a `set_output_module()` call. Closes a long-standing
+  TODO; `self._id` deliberately stays as the `_active_servers` key.
+- `551110555` — lock `_latest_event` on read and clear paths in
+  `event_manager.py`. Previously the AT-SPI dispatch thread wrote
+  under `_gidle_lock` but the GLib main thread read without it, and
+  `deactivate()` / `pause_queuing(clear_queue=True)` reassigned the
+  dict wholesale, so cross-thread observers could see stale or
+  orphan state. Now reads hold the lock and clears use `.clear()`.
+- `ae5970ab9` — suppress duplicate `AXObject.clear_cache` calls
+  within a single event scope. Multiple handlers in one event
+  commonly clear the same obj; the first does real work, subsequent
+  calls are D-Bus round-trips for nothing. Tracked via a new
+  `cleared` set on the existing `event_scope` TLS. Recursive clears
+  always run.
+- `e031c1239` — rewrite `AXUtilities._is_descendant` to cache the
+  resolved answer at every visited ancestor in a single walk, not
+  just at the queried node. Also closes a redundancy where a True
+  parent answer still fell through to a full `find_ancestor` walk
+  on obj.
+- `740d84192` — upgrade the 150ms nav-cache debounce from
+  drop-and-recompute to background-rebuild. The debounce timer now
+  schedules each stale entry's rebuild on `GLib.idle_add` instead of
+  dropping it; reads keep serving the old list until the idle
+  handler swaps the new one in. By the time the next H/K press
+  lands the cache is typically already refreshed.
+
 **Speech-prefs correctness (commit `e05d8868d`)**
 
 Fixes a regression in the GSettings-based prefs system where changing
@@ -219,35 +251,31 @@ worth picking up next:
   get reverted either; they'll leak past Cancel until Orca restarts.
   Same fix pattern as `revert_changes` in `VoicesPreferencesGrid`.
 
-## Next-on-deck (after the round-2 commits above)
+## Next-on-deck (after the round-3 commits above)
 
-The biggest remaining wins, in rough priority order — these have not
-been started yet:
+Most of the original "next-on-deck" list was knocked out in rounds
+2 and 3. What remains:
 
-- **Web `DocumentNavigationIndex`** (full incremental index, not just
-  the deferred-drop debounce we have now). Build a per-document
-  ordered list of headings/links/forms/etc. on page load; mutate
-  it on children-changed:add/:remove events instead of dropping the
-  whole match list. Converts H/K/B keypresses from O(tree) to
-  O(log n). Multi-day, biggest perceivable web responsiveness win
-  available. WEB analysis #1.
-- **Caret-order pre-computation** on page load (WEB #2). Same idea
-  but for arrow-key navigation through text.
-- **Lazy descendant-ancestor checks** (CORE #4). Replace eager
-  `IS_DOCUMENT_DESCENDANT` etc. with on-demand walks + memoization.
-  15-25% cache memory reduction, cheaper wipes.
-- **Consolidate libatspi cache-clear calls** (CORE #6). Batch the
-  scattered `Atspi.Accessible.clear_cache()` invocations.
-- **`_latest_event` dict race condition** in `event_manager.py`.
-  Latent crash source under heavy event load.
-- **Output module sync TODO** at `speechdispatcherfactory.py:576`.
-  Switching the output module updates speechd but not `self._id`.
+- **True incremental Web Navigation Index.** The round-3
+  background-rebuild patch (`740d84192`) gets us most of the way
+  there — by the time the next press lands the cache is usually
+  fresh. The remaining gap is the recompute itself: each rebuild
+  still walks the whole tree. A true incremental index would mutate
+  the cached list on `children-changed:add`/`:remove` instead of
+  re-walking. Multi-day; harder than expected because new matches
+  must be inserted in document order (requires path comparisons
+  during insert).
+- **Caret-order pre-computation** for arrow-key navigation through
+  text (WEB analysis #2). Same general idea but for caret nav.
+- **Fake role / synthetic role cleanup** in `speech_generator.py:1789`
+  ("this function really needs to die"). Pre-AT-SPI-2.0 legacy.
+- **Deprecate Pidgin/Smuxi scripts.** Both apps effectively dead.
 
-Deferred / not recommended:
+Strategic / not recommended for the author:
 - **Full Spiel migration** — would give 20-30% speech-latency
   reduction by eliminating speech-dispatcher, but Spiel has no Voxin
   provider, so the author would lose Voxin. Revisit when (if) one
-  ships.
+  ships, or build a Spiel-Piper provider as a side project.
 - **AT-SPI batch query API** (`get_attributes_batch` proposed to
   upstream Atspi). Multi-quarter upstream effort.
 
