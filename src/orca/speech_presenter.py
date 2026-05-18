@@ -75,7 +75,7 @@ from .speechserver import VoiceFamily
 from .text_attribute_manager import TextAttributeChangeMode
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Generator, Iterable
 
     from .dbus_service import UInt32
     from .generator import WhereAmI
@@ -3128,8 +3128,9 @@ class SpeechPresenter(Extension):
     ) -> None:
         """Speak the characters in the string one by one."""
 
-        for i, character in enumerate(text):
-            language, dialect = self._language_at_offset(obj, start_offset, i)
+        for character, language, dialect in self._iter_text_with_language(
+            text, obj, start_offset
+        ):
             self.speak_character(character, obj=obj, language=language, dialect=dialect)
 
     def spell_phonetically(
@@ -3140,26 +3141,57 @@ class SpeechPresenter(Extension):
     ) -> None:
         """Phonetically spell item_string."""
 
-        for i, character in enumerate(item_string):
-            language, dialect = self._language_at_offset(obj, start_offset, i)
-            voice = self._get_voice(text=character, obj=obj, language=language, dialect=dialect)
+        last_lang: tuple[str, str] | None = None
+        voice: list[ACSS] = []
+        for character, language, dialect in self._iter_text_with_language(
+            item_string, obj, start_offset
+        ):
+            if (language, dialect) != last_lang:
+                voice = self._get_voice(
+                    text=character, obj=obj, language=language, dialect=dialect
+                )
+                last_lang = (language, dialect)
             phonetic_string = phonnames.get_phonetic_name(character.lower())
             self._speak(phonetic_string, voice[0] if voice else None)
 
     @staticmethod
-    def _language_at_offset(
-        obj: Atspi.Accessible | None, start_offset: int | None, index: int = 0
-    ) -> tuple[str, str]:
-        """Returns (language, dialect) from text attributes at start_offset + index."""
+    def _iter_text_with_language(
+        text: str,
+        obj: Atspi.Accessible | None,
+        start_offset: int | None,
+    ) -> Generator[tuple[str, str, str], None, None]:
+        """Yields (character, language, dialect) for each char in text.
 
-        if obj is None or start_offset is None:
-            return "", ""
-        attrs = AXText.get_text_attributes_at_offset(obj, start_offset + index)[0]
-        lang = attrs.get("language", "")
-        if "-" in lang:
-            language, dialect = lang.split("-", 1)
-            return language, dialect
-        return lang, ""
+        Batches AT-SPI attribute queries by language run: one IPC per
+        contiguous language span instead of one per character. For typical
+        single-language input this is one IPC for the whole string.
+        """
+
+        if obj is None or start_offset is None or not text:
+            for ch in text:
+                yield ch, "", ""
+            return
+
+        i = 0
+        n = len(text)
+        while i < n:
+            attrs, _run_start, run_end = AXText.get_text_attributes_at_offset(
+                obj, start_offset + i
+            )
+            lang = attrs.get("language", "")
+            if "-" in lang:
+                language, dialect = lang.split("-", 1)
+            else:
+                language, dialect = lang, ""
+            # run_end is exclusive in obj's full text; translate to text-relative.
+            end_in_text = min(run_end - start_offset, n)
+            # Defensive: if AT-SPI reports a zero-width or backwards run, advance
+            # one character so we cannot livelock on the spelling.
+            if end_in_text <= i:
+                end_in_text = i + 1
+            for j in range(i, end_in_text):
+                yield text[j], language, dialect
+            i = end_in_text
 
     def create_speech_preferences_grid(
         self,
