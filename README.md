@@ -1,4 +1,20 @@
-# Orca v51.alpha
+# Orca v51.alpha — `perf/atspi-event-cache` fork
+
+> **You are looking at a personal fork**, hosted at
+> <https://github.com/churst90/orca-perf>. The upstream project lives
+> at <https://gitlab.gnome.org/GNOME/orca>. This fork carries:
+>
+> - AT-SPI property caching (role/parent/name/state) within and across events
+> - Per-document caches for structural navigation (headings, links, ...)
+> - Held-key speech coalescing
+> - A fix for a speech-prefs regression where switching synthesizers
+>   would silently revert on save (commit `e05d8868d`)
+>
+> See [`BRANCH_INFO.md`](BRANCH_INFO.md) for the full fork story,
+> per-commit rationale, measured impact, build instructions, and open
+> work. The rest of this README is the upstream Orca readme, unchanged.
+
+---
 
 [TOC]
 

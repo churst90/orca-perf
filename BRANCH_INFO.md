@@ -22,14 +22,34 @@ This branch was forked from upstream `main` at:
 
 ## What the patches change
 
-Roughly: aggressive caching of AT-SPI property reads (role, parent, name)
-within and across events; a per-document cache of structural-navigation
-match lists (headings, links, etc.); and held-key coalescing so that key
+This branch carries two categories of patches:
+
+**Performance / stability (commits `d1b418a19` through `713b9cc29`)**
+
+Aggressive caching of AT-SPI property reads (role, parent, name) within
+and across events; a per-document cache of structural-navigation match
+lists (headings, links, etc.); and held-key coalescing so that key
 auto-repeat does not flood `script.present_object()` with overlapping
 scroll-and-speech calls.
 
-See `ANALYSIS.md` for the full design report and individual commit
-messages for per-patch rationale and measured impact.
+**Speech-prefs correctness (commit `e05d8868d`)**
+
+Fixes a regression in the GSettings-based prefs system where changing
+the speech synthesizer in Orca preferences and saving would silently
+revert the choice. The combo selection was applied to the live speech
+server but never persisted to dconf; `default.py:Script.activate()`
+calls `update_synthesizer()` on every focus event, which reads dconf
+(still the old value), and on save the dconf value won out. Symptom
+was most visible switching to/from synthesizers with unique voice
+names — `sd-piper`'s `en_US-ryan-medium` etc. — because the voice-name
+side effect in speech-dispatcher's `SET SYNTHESIS_VOICE` would flip
+modules. Fix follows the established `_on_punctuation_changed` pattern
+(register a runtime override in the combo handler, read the combo
+widget in save_settings, clear the override on Cancel).
+
+See `ANALYSIS.md` for the full design report on the perf patches, and
+individual commit messages for per-patch rationale and measured impact.
+The synth fix is self-contained in the commit message of `e05d8868d`.
 
 Two changes in this branch fix issues that were observed but never
 reproduced in stock 50.1.2; treat them as caveats:
@@ -136,3 +156,47 @@ this branch doesn't address it. Spiel migration would.
 - `ANALYSIS_SPEECH.md` — speech + braille pipeline deep dive
 - `ANALYSIS_WEB.md` — web/document handling deep dive
 - `ANALYSIS_CONFIG.md` — configuration + script system deep dive
+
+## Open work
+
+Things that are known-broken or known-incomplete in this branch and
+worth picking up next:
+
+- **Same runtime-override gap may exist on other speech-prefs combos.**
+  The synth fix (`e05d8868d`) only patches `_on_speech_synthesizer_changed`
+  and `VoicesPreferencesGrid.save_settings`. The speech-system combo
+  (Speech Dispatcher vs. Spiel) and the voice-family combos use the
+  same architecture and probably exhibit the same revert-on-focus bug
+  when changed during prefs. Reproducing requires multiple speech
+  servers — the author only has Speech Dispatcher installed, so this
+  hasn't been verified.
+- **`focus_manager.is_in_preferences_window()` is too narrow.** It only
+  matches the prefs root window, not its descendant dialogs (Global
+  Voice Settings, Voice Defaults). That's why `update_synthesizer()`
+  was reaching back into dconf in the first place. The runtime-override
+  patch routes around the symptom; the underlying guard should be
+  broadened to "any window owned by the Orca app while prefs is open."
+- **`AXObject._NAME_LL_CACHE_DISABLED = True` was a diagnostic, not a
+  fix.** With the held-key coalescing in place, the wrong-window-title
+  symptom doesn't recur, but the name cache may be re-enableable. Worth
+  toggling the flag back on and stress-testing Alt-Tab.
+- **Long-lived StateSet cache reverted (`6445b86e4`).** The right
+  approach is probably to cache primitive state bits (a frozenset of
+  ints) instead of the live `Atspi.StateSet` object. Not attempted yet.
+- **Spiel migration in `src/orca/spiel.py` has TODOs at lines 467, 476,
+  483** for utterance-offset mapping. Closing those would unlock the
+  in-process speech path, which is a bigger latency win than any of the
+  perf patches on this branch. Upstream work.
+- **Cancel-revert UX** for the speech grid only handles the synthesizer
+  runtime override. The voice-family / language / rate / pitch /
+  volume sliders set runtime values via `set_runtime_value` and don't
+  get reverted either; they'll leak past Cancel until Orca restarts.
+  Same fix pattern as `revert_changes` in `VoicesPreferencesGrid`.
+
+## License and upstream
+
+GNOME Orca is licensed under LGPL 2.1+. This fork inherits that
+license. None of the patches change file headers. The branch is hosted
+publicly at <https://github.com/churst90/orca-perf> for ease of
+collaboration; it is not a hard fork — re-syncing with upstream is
+expected (see "Keeping up with upstream" above).
