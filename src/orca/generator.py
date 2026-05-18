@@ -189,7 +189,6 @@ class Generator:
             Atspi.Role.SWITCH: self._generate_switch,
             Atspi.Role.TABLE: self._generate_table,
             Atspi.Role.TABLE_CELL: self._generate_table_cell_in_row,
-            "REAL_ROLE_TABLE_CELL": self._generate_table_cell,
             Atspi.Role.TABLE_ROW: self._generate_table_row,
             Atspi.Role.TEAROFF_MENU_ITEM: self._generate_tearoff_menu_item,
             Atspi.Role.TERMINAL: self._generate_terminal,
@@ -1158,13 +1157,19 @@ class Generator:
 
     ##################################### TABLE #####################################
 
-    # TODO - JD: This function and fake role really need to die....
     @log_generator_output
     def _generate_real_table_cell(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        result = []
-        args["role"] = "REAL_ROLE_TABLE_CELL"
-        result.extend(self.generate(obj, **args))
-        return result
+        """Generates presentation for one table cell.
+
+        Calls _generate_table_cell directly via MRO so subclass overrides
+        still apply. The earlier implementation re-dispatched through
+        self.generate() with a synthetic args['role'] = 'REAL_ROLE_TABLE_CELL'
+        registered in the _generators dict; that was indirection without
+        purpose, since the format-dispatch table mapped the synthetic key
+        to the same method this direct call lands on.
+        """
+
+        return self._generate_table_cell(obj, **args)
 
     def _get_is_nameless_toggle(self, obj):
         if hash(obj) in Generator.CACHED_IS_NAMELESS_TOGGLE:
@@ -1182,7 +1187,6 @@ class Generator:
         Generator.CACHED_IS_NAMELESS_TOGGLE[hash(obj)] = True
         return True
 
-    # TODO - JD: This is part of the complicated "REAL_ROLE_TABLE_CELL" mess.
     @log_generator_output
     def _generate_table_cell_row(self, obj: Atspi.Accessible, **args) -> list[Any]:
         present_all = (

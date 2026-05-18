@@ -1786,7 +1786,6 @@ class SpeechGenerator(generator.Generator):
 
     ##################################### TABLE #####################################
 
-    # TODO - JD: This function and fake role really need to die....
     @log_generator_output
     def _generate_real_table_cell(self, obj: Atspi.Accessible, **args) -> list[Any]:
         result = super()._generate_real_table_cell(obj, **args)
