@@ -226,3 +226,98 @@ In rough order of effort and impact:
 The seam issues (S1, S2, S3, S4, S7, S8, S9, S10) are multi-team
 efforts that need raising with the right maintainers separately. Not
 branch material — they're conversation starters.
+
+---
+
+## Part 3 — Subsystem audit (round 6)
+
+Targeted pass through subsystems not covered by ANALYSIS_*.md or
+earlier rounds. Conclusion up front: **nothing here is urgent.** A
+few minor inconsistencies and one real-but-low-impact UX bug; bulk
+of the surface is clean and single-threaded.
+
+### Findings
+
+**P1. `notification_presenter._current_index` is not adjusted when
+the queue is truncated.** `notification_presenter.py:108-110`. When
+a new notification arrives and the list is at `_max_size` (55), the
+oldest entry is dropped. If the user is browsing at a positive
+index (`_current_index == 5`, say), their pointer now refers to a
+different message after the truncation. Symptom is "previous
+notification" jumping unexpectedly. Rare (requires browsing at
+exactly the moment the list hits cap), low impact, deterministic.
+**BUG, SMALL.** Fix shape: subtract `to_remove` from
+`_current_index` when positive, clamp to 0.
+
+**P2. `notification_presenter` `IndexError` except clauses mask the
+real condition.** Lines 205 and 252 catch `IndexError` defensively
+after a `not self._notifications` guard. The only path to the
+`except` is a stale `_current_index`. Better to clamp the index up
+front (related to P1) and remove the defensive handler. **CLEAN,
+SMALL.**
+
+**P3. `notification_presenter` uses `list` slice-append for a
+bounded queue.** Lines 108-110 do an O(n) slice-copy on every
+append once the list reaches cap. `collections.deque(maxlen=55)`
+is the idiomatic answer; O(1) append + natural truncation, and
+trivially preserves a single positive index since deque indexing
+matches list semantics. **CLEAN, SMALL.** Same change addresses
+P1/P2 in passing.
+
+**P4. `mouse_review` schedules a 50ms `GLib.timeout_add` per
+event.** `mouse_review.py:851, 877`. Each AT-SPI mouse event
+schedules a new timer; the timer source is never stored or
+cancelled. The processing logic (`_process_event`) intentionally
+discards events when the queue still has pending items behind it,
+so behavior is correct (coalesces to the latest), but you can have
+hundreds of pending GLib timer sources during rapid mouse movement.
+Wasted machinery, not a leak (sources auto-clean on fire). **CLEAN,
+SMALL.** Fix shape: track a single `_pending_timer_id`, skip
+scheduling if one is already armed — same pattern we used for the
+structural-nav debounce.
+
+**P5. `flat_review_presenter._listener` has a leftover TODO.**
+`flat_review_presenter.py:109` — `# TODO - JD: Implement support
+to invalidate individual objects.` The current behavior drops the
+flat-review context wholesale on changes. Per-object invalidation
+would let the user keep their position when an unrelated part of
+the window updates. Touches the same event-scope infrastructure we
+built. **CLEAN, MEDIUM.** Worth flagging to Joanmarie if she opens
+a conversation about caching.
+
+**P6. `flat_review_presenter.say_all` doesn't preserve the user's
+location.** Line 1411 captures `location` but the function discards
+it without restoring after speaking. After `say_all` the user is at
+the END of the window content; if they were reviewing mid-document
+they lose their place. Probably intentional behavior carried over
+from older code, but worth confirming. **POSSIBLE BUG, SMALL.**
+
+**P7. `phonnames.py` builds its dict at module import without
+exception handling.** If a translation has a malformed entry
+(missing colon, extra colon), the import raises and Orca fails to
+start. Defensive `try/except` plus a fallback to the English NATO
+alphabet would harden against bad translation files. **CLEAN,
+SMALL.** Low impact (would be caught in translation review), but
+trivial to harden.
+
+### What does not need work
+
+- **`bypass_mode_manager.py`** — 106 lines, single-threaded boolean
+  toggle. Clean.
+- **`table_navigator.py`** (982 lines) and **`caret_navigator.py`**
+  (1003 lines) — mostly state-tracking around `_last_input_event`.
+  No threading, no caches that could go stale, no exception
+  swallowing. Repeated `self._last_input_event = event` at every
+  command method is verbose but not wrong.
+- **`flat_review_presenter.py`** main flow — uses the right single
+  `_idle_id` pattern for event coalescing. Properly removes the
+  source on quit.
+
+### Verdict
+
+Six small findings; P1 is the only real bug (and very rare). P3
+collapses P1/P2 into a single deque conversion. P4 is a clean-up
+that mirrors a pattern we already use elsewhere. Total work:
+maybe half a day if you want to land all of them. None worth
+prioritizing over the larger items still pending (multi-day web
+index, `is_in_preferences_window` broadening).
