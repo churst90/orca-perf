@@ -83,6 +83,8 @@ class AXObject:
 
     KNOWN_DEAD: ClassVar[dict[int, bool]] = {}
     OBJECT_ATTRIBUTES: ClassVar[dict[int, dict[str, str]]] = {}
+    HUNG_OBJECTS: ClassVar[dict[int, float]] = {}
+    HUNG_TIMEOUT = 1.0
 
     # Long-lived caches that survive across events. AT-SPI roles essentially
     # never change during an object's lifetime; parents rarely do; names
@@ -234,6 +236,17 @@ class AXObject:
             AXObject._clear_all_dictionaries()
 
     @staticmethod
+    def _prune_hung_objects() -> None:
+        """Removes objects whose hung-status has expired."""
+
+        while True:
+            time.sleep(AXObject.HUNG_TIMEOUT)
+            now = time.monotonic()
+            for key in list(AXObject.HUNG_OBJECTS):
+                if now - AXObject.HUNG_OBJECTS[key] >= AXObject.HUNG_TIMEOUT:
+                    del AXObject.HUNG_OBJECTS[key]
+
+    @staticmethod
     def _clear_all_dictionaries(reason: str = "") -> None:
         msg = "AXObject: Clearing local cache."
         if reason:
@@ -255,6 +268,10 @@ class AXObject:
         """Starts thread to periodically clear cached details."""
 
         thread = threading.Thread(target=AXObject._clear_stored_data)
+        thread.daemon = True
+        thread.start()
+
+        thread = threading.Thread(target=AXObject._prune_hung_objects)
         thread.daemon = True
         thread.start()
 
@@ -292,6 +309,18 @@ class AXObject:
         return False
 
     @staticmethod
+    def _can_reach_application(obj: Atspi.Accessible) -> bool:
+        """Returns True if we can ascend the ancestry of obj all the way to the application."""
+
+        reached_app = False
+        parent = AXObject.get_parent(obj)
+        while parent and not reached_app:
+            reached_app = AXObject.get_role(parent) == Atspi.Role.APPLICATION
+            parent = AXObject.get_parent(parent)
+
+        return reached_app
+
+    @staticmethod
     def has_broken_ancestry(obj: Atspi.Accessible) -> bool:
         """Returns True if obj's ancestry is broken."""
 
@@ -303,13 +332,7 @@ class AXObject:
         if not toolkit_name.startswith("qt"):
             return False
 
-        reached_app = False
-        parent = AXObject.get_parent(obj)
-        while parent and not reached_app:
-            reached_app = AXObject.get_role(parent) == Atspi.Role.APPLICATION
-            parent = AXObject.get_parent(parent)
-
-        if not reached_app:
+        if not AXObject._can_reach_application(obj):
             tokens = ["AXObject:", obj, "has broken ancestry. See qt bug 130116."]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             return True
@@ -317,16 +340,57 @@ class AXObject:
         return False
 
     @staticmethod
-    def is_valid(obj: Atspi.Accessible) -> bool:
+    def has_broken_popup_ancestry(obj: Atspi.Accessible) -> bool:
+        """Returns True if obj is a popup item whose ancestry is broken."""
+
+        if obj is None or AXObject.is_dead(obj):
+            return False
+
+        # TODO - JD: File a bug. The scenario is that when the omnibox popup is closed and then
+        # re-opened, we cannot ascend all the way to the frame. In addition, parents along the
+        # way claim to have 0 children.
+        if not AXObject.get_toolkit_name(obj).startswith("chromium"):
+            return False
+
+        if AXObject.get_role(obj) != Atspi.Role.LIST_ITEM:
+            return False
+
+        if not AXObject._can_reach_application(obj):
+            tokens = ["AXObject:", obj, "has broken ancestry."]
+            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+            return True
+
+        return False
+
+    @staticmethod
+    def is_valid(obj: Atspi.Accessible, app: Atspi.Accessible | None = None) -> bool:
         """Returns False if we know for certain this object is invalid"""
 
-        return not (obj is None or AXObject.object_is_known_dead(obj))
+        return not (
+            obj is None or AXObject.object_is_known_dead(obj) or AXObject.check_hung(obj, app)
+        )
 
     @staticmethod
     def object_is_known_dead(obj: Atspi.Accessible) -> bool:
         """Returns True if we know for certain this object no longer exists"""
 
         return bool(obj and AXObject.KNOWN_DEAD.get(hash(obj))) is True
+
+    @staticmethod
+    def check_hung(
+        obj: Atspi.Accessible | None,
+        app: Atspi.Accessible | None = None,
+    ) -> bool:
+        """Returns True if obj or its app is hung, propagating obj-hung to app."""
+
+        obj_hung = obj is not None and hash(obj) in AXObject.HUNG_OBJECTS
+        app_hung = app is not None and hash(app) in AXObject.HUNG_OBJECTS
+        if obj_hung and app is not None and not app_hung:
+            tokens = ["AXObject: Marking", app, "as hung due to hung source"]
+            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+            AXObject.HUNG_OBJECTS[hash(app)] = AXObject.HUNG_OBJECTS[hash(obj)]
+            app_hung = True
+        return obj_hung or app_hung
 
     @staticmethod
     def _set_known_dead_status(obj: Atspi.Accessible, is_dead: bool) -> None:
@@ -353,12 +417,21 @@ class AXObject:
     def handle_error(obj: Atspi.Accessible, error: Exception, msg: str) -> None:
         """Parses the exception and potentially updates our status for obj"""
 
+        if AXObject.object_is_known_dead(obj):
+            return
+
         error_string = str(error)
-        if re.search(r"accessible/\d+ does not exist", error_string):
-            msg = msg.replace(error_string, "object no longer exists")
+        if "Object does not exist at path" in error_string:
             debug.print_message(debug.LEVEL_INFO, msg, True)
-        elif re.search(r"The application no longer exists", error_string):
+        elif "The application no longer exists" in error_string:
             msg = msg.replace(error_string, "app no longer exists")
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+        elif "The process appears to be hung" in error_string:
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+            AXObject.HUNG_OBJECTS[hash(obj)] = time.monotonic()
+            return
+        elif re.search(r"accessible/\d+ does not exist", error_string):
+            msg = msg.replace(error_string, "object no longer exists")
             debug.print_message(debug.LEVEL_INFO, msg, True)
         else:
             debug.print_message(debug.LEVEL_INFO, msg, True)
@@ -1261,13 +1334,13 @@ class AXObject:
         return pid
 
     @staticmethod
-    def is_dead(obj: Atspi.Accessible) -> bool:
+    def is_dead(obj: Atspi.Accessible, app: Atspi.Accessible | None = None) -> bool:
         """Returns true of obj exists but is believed to be dead."""
 
         if obj is None:
             return False
 
-        if not AXObject.is_valid(obj):
+        if not AXObject.is_valid(obj, app):
             return True
 
         try:

@@ -105,19 +105,7 @@ class EventManager:
         self._listener: Atspi.EventListener = Atspi.EventListener.new(self._enqueue_object_event)
         self._event_history: dict[str, tuple[int | None, float]] = {}
         self._latest_event: dict[tuple[str, int], int] = {}
-        self._cached_app_source: Atspi.Accessible | None = None
-        self._cached_app_result: Atspi.Accessible | None = None
         debug.print_message(debug.LEVEL_INFO, "Event manager initialized", True)
-
-    def _get_application(self, source: Atspi.Accessible) -> Atspi.Accessible | None:
-        """Returns the application for source, using a cache to avoid repeated AT-SPI calls."""
-
-        if source == self._cached_app_source:
-            return self._cached_app_result
-        app = AXUtilities.get_application(source)
-        self._cached_app_source = source
-        self._cached_app_result = app
-        return app
 
     def activate(self) -> None:
         """Called when this event manager is activated."""
@@ -309,7 +297,7 @@ class EventManager:
             return True
 
         if AXUtilities.is_frame(event.source):
-            app = self._get_application(event.source)
+            app = AXUtilities.get_application(event.source)
             ignore = AXUtilities.is_mutter_x11_frames(app)
             prefix = "Ignoring" if ignore else "Not ignoring"
             reason = "application" if ignore else "role"
@@ -384,7 +372,7 @@ class EventManager:
 
         event_type = event.type
         last_app, last_time = self._event_history.get(event_type, (None, 0))
-        app = self._get_application(event.source)
+        app = AXUtilities.get_application(event.source)
         ignore = last_app == hash(app) and time.time() - last_time < 0.1
         self._event_history[event_type] = hash(app), time.time()
         if ignore:
@@ -425,7 +413,7 @@ class EventManager:
             return True
 
         script = script_manager.get_manager().get_active_script()
-        if script is None or script.app != self._get_application(event.source):
+        if script is None or script.app != AXUtilities.get_application(event.source):
             reason = (
                 "there is no active script" if script is None else "event is not from active app"
             )
@@ -556,7 +544,7 @@ class EventManager:
             return False
 
         if event_type.startswith("object:selection-changed"):
-            if AXObject.is_dead(event.source):
+            if AXObject.is_dead(event.source, AXUtilities.get_application(event.source)):
                 msg = f"EVENT MANAGER: Ignoring {event_type} from dead source"
                 debug.print_message(debug.LEVEL_INFO, msg, True)
                 return True
@@ -660,9 +648,14 @@ class EventManager:
             return
 
         self._queue_println(e)
-        app = self._get_application(e.source)
+        app = AXUtilities.get_application(e.source)
         tokens = ["EVENT MANAGER: App for event source is", app]
         debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+
+        if AXObject.check_hung(e.source, app):
+            tokens = ["EVENT MANAGER: Dropping", e, "from hung source or app"]
+            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+            return
 
         script = script_manager.get_manager().get_script(app, e.source)
         script.event_cache[e.type] = (e, time.time())
@@ -815,7 +808,7 @@ class EventManager:
             return script
 
         script = None
-        app = self._get_application(event.source)
+        app = AXUtilities.get_application(event.source)
         if AXUtilities.is_defunct(app):
             tokens = ["EVENT MANAGER:", app, "is defunct. Cannot get script for event."]
             debug.print_tokens(debug.LEVEL_WARNING, tokens, True)
@@ -844,7 +837,7 @@ class EventManager:
             if not script:
                 return False, "There is no script for this event."
 
-        app = self._get_application(event.source)
+        app = AXUtilities.get_application(event.source)
         if app and not AXUtilities.is_application_in_desktop(app):
             return False, "The application is unknown to AT-SPI2"
 
@@ -896,7 +889,7 @@ class EventManager:
         return False, "No reason found to activate a different script."
 
     def _event_source_is_dead(self, event: Atspi.Event) -> bool:
-        if AXObject.is_dead(event.source):
+        if AXObject.is_dead(event.source, AXUtilities.get_application(event.source)):
             tokens = ["EVENT MANAGER: source of", event.type, "is dead"]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             return True
@@ -945,7 +938,8 @@ class EventManager:
             script_mgr.reclaim_scripts()
             return True
 
-        if AXObject.is_dead(event.source) or AXUtilities.is_defunct(event.source):
+        app = AXUtilities.get_application(event.source)
+        if AXObject.is_dead(event.source, app) or AXUtilities.is_defunct(event.source):
             tokens = ["EVENT MANAGER: Ignoring defunct object:", event.source]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 

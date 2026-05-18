@@ -21,6 +21,12 @@
 
 """Utilities for accessible applications."""
 
+from __future__ import annotations
+
+import threading
+import time
+from typing import TYPE_CHECKING
+
 import gi
 
 gi.require_version("Atspi", "2.0")
@@ -29,12 +35,35 @@ from gi.repository import Atspi, GLib
 from . import debug
 from .ax_object import AXObject
 
+if TYPE_CHECKING:
+    from typing import ClassVar
+
 
 class AXUtilitiesApplication:
     """Utilities for accessible applications."""
 
+    APP_FOR_OBJ: ClassVar[dict[int, Atspi.Accessible]] = {}
+
     _mutter_x11_frames: Atspi.Accessible | None = None
     _mutter_x11_frames_checked: bool = False
+
+    @staticmethod
+    def start_cache_clearing_thread() -> None:
+        """Starts thread to periodically clear cached details."""
+
+        thread = threading.Thread(target=AXUtilitiesApplication._clear_stored_data)
+        thread.daemon = True
+        thread.start()
+
+    @staticmethod
+    def _clear_stored_data() -> None:
+        """Clears any data we have cached for applications."""
+
+        while True:
+            time.sleep(120)
+            msg = "AXUtilitiesApplication: Clearing local cache."
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+            AXUtilitiesApplication.APP_FOR_OBJ.clear()
 
     @staticmethod
     def application_as_string(obj: Atspi.Accessible) -> str:
@@ -84,15 +113,30 @@ class AXUtilitiesApplication:
     def get_application(obj: Atspi.Accessible) -> Atspi.Accessible | None:
         """Returns the accessible application associated with obj"""
 
-        if obj is None:
+        if not AXObject.is_valid(obj):
             return None
+
+        cached = AXUtilitiesApplication.APP_FOR_OBJ.get(hash(obj))
+        if cached is not None:
+            return cached
+
+        parent = AXObject.get_parent(obj)
+        if parent is not None:
+            cached = AXUtilitiesApplication.APP_FOR_OBJ.get(hash(parent))
+            if cached is not None:
+                AXUtilitiesApplication.APP_FOR_OBJ[hash(obj)] = cached
+                return cached
 
         try:
             app = Atspi.Accessible.get_application(obj)
         except GLib.GError as error:
             msg = f"AXUtilitiesApplication: Exception in get_application: {error}"
-            debug.print_message(debug.LEVEL_INFO, msg, True)
+            AXObject.handle_error(obj, error, msg)
             return None
+        if app is not None:
+            AXUtilitiesApplication.APP_FOR_OBJ[hash(obj)] = app
+            if parent is not None:
+                AXUtilitiesApplication.APP_FOR_OBJ[hash(parent)] = app
         return app
 
     @staticmethod
@@ -107,7 +151,7 @@ class AXUtilitiesApplication:
             name = Atspi.Accessible.get_toolkit_name(app)
         except GLib.GError as error:
             msg = f"AXUtilitiesApplication: Exception in get_application_toolkit_name: {error}"
-            debug.print_message(debug.LEVEL_INFO, msg, True)
+            AXObject.handle_error(app, error, msg)
             return ""
 
         return name
@@ -124,7 +168,7 @@ class AXUtilitiesApplication:
             version = Atspi.Accessible.get_toolkit_version(app)
         except GLib.GError as error:
             msg = f"AXUtilitiesApplication: Exception in get_application_toolkit_version: {error}"
-            debug.print_message(debug.LEVEL_INFO, msg, True)
+            AXObject.handle_error(app, error, msg)
             return ""
 
         return version
@@ -163,7 +207,7 @@ class AXUtilitiesApplication:
             pid = Atspi.Accessible.get_process_id(obj)
         except GLib.GError as error:
             msg = f"AXUtilitiesApplication: Exception in get_process_id: {error}"
-            debug.print_message(debug.LEVEL_INFO, msg, True)
+            AXObject.handle_error(obj, error, msg)
             return -1
 
         return pid
@@ -226,3 +270,6 @@ class AXUtilitiesApplication:
             return True
 
         return False
+
+
+AXUtilitiesApplication.start_cache_clearing_thread()
