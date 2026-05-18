@@ -80,6 +80,14 @@ class SpeechServer(speechserver.SpeechServer):
 
     # *** Instance methods ***
 
+    # Probe interval for the connection-liveness check. When speech-dispatcher
+    # is restarted while Orca is idle, the SSIP socket is closed but Orca
+    # only notices on the next speak attempt -- which then has to pay a
+    # reconnect cycle and the user hears a dropout. A 30-second cheap probe
+    # discovers the drop during idle time so the next speak finds a healthy
+    # connection.
+    _HEALTH_PROBE_INTERVAL_MS = 30000
+
     def __init__(self, server_id: str) -> None:
         super().__init__(server_id)
         self._client: Any = None
@@ -90,6 +98,7 @@ class SpeechServer(speechserver.SpeechServer):
             tuple[str, str, str | None, int | None],
             list[tuple[str, str, str | None]],
         ] = {}
+        self._health_probe_source_id: int = 0
         if not _SPEECHD_AVAILABLE:
             msg = "ERROR: Speech Dispatcher is not available"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
@@ -127,6 +136,7 @@ class SpeechServer(speechserver.SpeechServer):
             debug.print_message(debug.LEVEL_WARNING, msg, True)
         else:
             SpeechServer._active_servers[server_id] = self
+            self._schedule_health_probe()
 
     def _init(self) -> None:
         try:
@@ -599,6 +609,7 @@ class SpeechServer(speechserver.SpeechServer):
         self._cancel()
 
     def shutdown(self) -> None:
+        self._cancel_health_probe()
         try:
             # Don't call _cancel() here because it can cut off messages we want to complete, such
             # as "screen reader off."
@@ -617,6 +628,7 @@ class SpeechServer(speechserver.SpeechServer):
                 del SpeechServer._active_servers[self._id]
 
     def reset(self) -> None:
+        self._cancel_health_probe()
         try:
             msg = f"SPEECH DISPATCHER: Resetting server {self._id}"
             debug.print_message(debug.LEVEL_INFO, msg, True)
@@ -630,8 +642,42 @@ class SpeechServer(speechserver.SpeechServer):
             self._init()
             if self._client is not None:
                 systemd.get_manager().set_status("Speech", "reconnected")
+                self._schedule_health_probe()
             else:
                 systemd.get_manager().set_status("Speech", "not connected")
+
+    def _schedule_health_probe(self) -> None:
+        """Arms the connection-liveness probe if not already scheduled."""
+
+        if self._health_probe_source_id:
+            return
+        self._health_probe_source_id = GLib.timeout_add(
+            self._HEALTH_PROBE_INTERVAL_MS, self._fire_health_probe
+        )
+
+    def _cancel_health_probe(self) -> None:
+        """Cancels the pending health probe if one is scheduled."""
+
+        if self._health_probe_source_id:
+            GLib.source_remove(self._health_probe_source_id)
+            self._health_probe_source_id = 0
+
+    def _fire_health_probe(self) -> bool:
+        """Cheap SSIP round-trip; _send_command auto-reconnects on failure."""
+
+        self._health_probe_source_id = 0
+        if self._client is None:
+            return False
+        # _send_command swallows SSIPCommunicationError and calls reset()
+        # internally to reconnect, so we don't need to inspect the return
+        # value -- if the socket was dead, reset() ran and the connection
+        # is back (or definitively gone). reset() reschedules the probe on
+        # success, so we only reschedule here on the no-error path.
+        prior_client = self._client
+        self._send_command(self._client.get_output_module)
+        if self._client is prior_client and self._client is not None:
+            self._schedule_health_probe()
+        return False
 
     def list_output_modules(self) -> tuple[str, ...]:
         """Return names of available output modules as a tuple of strings."""
