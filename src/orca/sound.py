@@ -98,6 +98,10 @@ class Player:
         self._sink: Gst.Element | None = None
         self._player: Gst.Element | None = None
         self._pipeline: Gst.Pipeline | None = None
+        self._player_bus: Gst.Bus | None = None
+        self._pipeline_bus: Gst.Bus | None = None
+        self._player_msg_handler_id: int = 0
+        self._pipeline_msg_handler_id: int = 0
         self._gstreamer_available: bool = _GSTREAMER_AVAILABLE
 
         if not self._gstreamer_available:
@@ -173,14 +177,18 @@ class Player:
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return
 
-        bus = self._player.get_bus()
-        bus.add_signal_watch()
-        bus.connect("message", self._on_player_message)
+        self._player_bus = self._player.get_bus()
+        self._player_bus.add_signal_watch()
+        self._player_msg_handler_id = self._player_bus.connect(
+            "message", self._on_player_message
+        )
 
         self._pipeline = Gst.Pipeline(name="orca-pipeline")
-        bus = self._pipeline.get_bus()
-        bus.add_signal_watch()
-        bus.connect("message", self._on_pipeline_message)
+        self._pipeline_bus = self._pipeline.get_bus()
+        self._pipeline_bus.add_signal_watch()
+        self._pipeline_msg_handler_id = self._pipeline_bus.connect(
+            "message", self._on_pipeline_message
+        )
 
         self._source = Gst.ElementFactory.make("audiotestsrc", "src")
         self._sink = Gst.ElementFactory.make("autoaudiosink", "output")
@@ -227,6 +235,28 @@ class Player:
             return
 
         self.stop()
+
+        # Tear down bus watches and signal handlers before dropping
+        # references. Without this, add_signal_watch()'s GLib main-loop
+        # source stays active and the connected "message" handler keeps
+        # the bus + player/pipeline objects alive past shutdown.
+        if self._player_bus is not None:
+            if self._player_msg_handler_id:
+                self._player_bus.disconnect(self._player_msg_handler_id)
+                self._player_msg_handler_id = 0
+            self._player_bus.remove_signal_watch()
+            self._player_bus = None
+        if self._pipeline_bus is not None:
+            if self._pipeline_msg_handler_id:
+                self._pipeline_bus.disconnect(self._pipeline_msg_handler_id)
+                self._pipeline_msg_handler_id = 0
+            self._pipeline_bus.remove_signal_watch()
+            self._pipeline_bus = None
+
+        self._player = None
+        self._pipeline = None
+        self._source = None
+        self._sink = None
         self._initialized = False
         self._gstreamer_available = False
 
