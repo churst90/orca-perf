@@ -127,6 +127,19 @@ class StructuralNavigator(Extension):
         self._nav_cache_hits = 0
         self._nav_cache_misses = 0
 
+        # Deferred-drop state. Children-changed events from a dynamic page
+        # (live regions, infinite scroll, ad refresh) often fire in dense
+        # bursts; dropping the cache synchronously on each one means every
+        # H/K/B keypress during the burst pays a full tree walk. Instead we
+        # mark affected keys stale, schedule a single 150ms GLib timer, and
+        # drop the entries when the burst settles. Reads keep serving the
+        # cached lists in the meantime -- worst case the user jumps to an
+        # element that just got removed and AT-SPI defunct detection
+        # recovers on the next press.
+        self._nav_cache_stale_keys: set[tuple[int, str]] = set()
+        self._nav_cache_drop_timer_id: int | None = None
+        self._NAV_CACHE_DROP_DELAY_MS = 150
+
         # Coalesce-with-delay state for held-key structural nav. Each
         # script.present_object() call below in _present_object does a
         # scroll-to-center which blocks the main thread in
@@ -193,10 +206,10 @@ class StructuralNavigator(Extension):
     ) -> None:
         """Invalidates the structural-nav cache based on an AT-SPI event.
 
-        Defunct events drop entries rooted at the source. Children-changed
-        events drop entries whose root is an ancestor of the source (the
-        change happened somewhere under that root). All other events are
-        ignored.
+        Defunct events drop entries rooted at the source immediately
+        (the root itself is gone, no point serving stale matches under it).
+        Children-changed events mark ancestor-rooted entries as stale and
+        defer the drop until the burst settles -- see _drop_stale_keys().
         """
 
         if not event_type or source is None:
@@ -205,9 +218,10 @@ class StructuralNavigator(Extension):
         if event_type == "object:defunct":
             source_hash = hash(source)
             with self._nav_cache_lock:
-                stale = [k for k in self._nav_cache if k[0] == source_hash]
-                for k in stale:
+                doomed = [k for k in self._nav_cache if k[0] == source_hash]
+                for k in doomed:
                     self._nav_cache.pop(k, None)
+                    self._nav_cache_stale_keys.discard(k)
             return
 
         if not event_type.startswith("object:children-changed"):
@@ -226,9 +240,26 @@ class StructuralNavigator(Extension):
         if not ancestor_hashes:
             return
         with self._nav_cache_lock:
-            stale = [k for k in self._nav_cache if k[0] in ancestor_hashes]
+            for k in self._nav_cache:
+                if k[0] in ancestor_hashes:
+                    self._nav_cache_stale_keys.add(k)
+            scheduled = self._nav_cache_drop_timer_id is not None
+        if not scheduled:
+            self._nav_cache_drop_timer_id = GLib.timeout_add(
+                self._NAV_CACHE_DROP_DELAY_MS, self._drop_stale_keys
+            )
+
+    def _drop_stale_keys(self) -> bool:
+        """GLib timer callback: drops keys marked stale during a burst."""
+
+        with self._nav_cache_lock:
+            stale = list(self._nav_cache_stale_keys)
+            self._nav_cache_stale_keys.clear()
+            self._nav_cache_drop_timer_id = None
             for k in stale:
                 self._nav_cache.pop(k, None)
+        self._log_nav_cache("drop", hit=False, n=len(stale))
+        return False  # one-shot
 
     # pylint: disable-next=too-many-locals
     def _get_commands(self) -> list[Command]:
