@@ -143,7 +143,8 @@ class EventManager:
         input_event_manager.get_manager().stop_key_watcher()
         self._active = False
         self._event_queue = queue.PriorityQueue(0)
-        self._latest_event = {}
+        with self._gidle_lock:
+            self._latest_event.clear()
         self._script_listener_counts = {}
         debug.print_message(debug.LEVEL_INFO, "EVENT MANAGER: Deactivated", True)
 
@@ -160,7 +161,8 @@ class EventManager:
         self._paused = pause
         if clear_queue:
             self._event_queue = queue.PriorityQueue(0)
-            self._latest_event = {}
+            with self._gidle_lock:
+                self._latest_event.clear()
         input_event_manager.get_manager().pause_key_watcher(pause, reason)
 
     def _get_priority(self, event: Atspi.Event) -> EventPriority:
@@ -206,7 +208,12 @@ class EventManager:
 
         if event.type.startswith(EventManager._SKIPPABLE_SAME_TYPE_PREFIXES):
             key = (event.type, hash(event.source))
-            latest = self._latest_event.get(key, -1)
+            # Read under the same lock that protects writes from the AT-SPI
+            # dispatch thread. Without this, a concurrent enqueue can leave
+            # us with a stale miss and we fail to filter an event that has
+            # already been obsoleted by a newer one.
+            with self._gidle_lock:
+                latest = self._latest_event.get(key, -1)
             if latest > counter >= 0:
                 tokens = [
                     "EVENT MANAGER:",
