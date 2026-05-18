@@ -115,6 +115,12 @@ _BRLAPI_RETRY_MAX_DELAY_MS = 60000
 _BRLAPI_CONNECT_TIMEOUT_MS = 5000
 _BRLAPI_TASK_TIMEOUT_MS = 5000
 _BRLAPI_DISPLAY_SIZE_POLL_MS = 500
+# Periodic NoOp probe so that brltty hangs are discovered during idle
+# time rather than blocking the next real write for the full
+# _BRLAPI_TASK_TIMEOUT_MS. The probe re-uses the existing task queue +
+# in-flight timeout, so a hung probe triggers the same _mark_brlapi_dead
+# / reconnect path that any other hung task would.
+_BRLAPI_PROBE_INTERVAL_MS = 10000
 _FLASH_EVENT_SOURCE_ID_INDEFINITE = -666
 
 _BRLAPI_ATTR_NAMES = (
@@ -280,6 +286,7 @@ class _BrailleState:
     brlapi_retry_source_id: int = 0
     brlapi_retry_delay_ms: int = _BRLAPI_RETRY_DELAY_MS
     brlapi_display_size_poll_id: int = 0
+    brlapi_probe_source_id: int = 0
     brlapi_queue: queue.Queue[_BrlapiTask | None] | None = None
     brlapi_worker: threading.Thread | None = None
     brlapi_inflight_action: str | None = None
@@ -456,6 +463,9 @@ def _mark_brlapi_dead(reason: str = "") -> None:
     if _STATE.brlapi_display_size_poll_id:
         GLib.source_remove(_STATE.brlapi_display_size_poll_id)
         _STATE.brlapi_display_size_poll_id = 0
+    if _STATE.brlapi_probe_source_id:
+        GLib.source_remove(_STATE.brlapi_probe_source_id)
+        _STATE.brlapi_probe_source_id = 0
     _STATE.brlapi_retry_delay_ms = _BRLAPI_RETRY_DELAY_MS
     _stop_brlapi_worker()
     _schedule_brlapi_retry()
@@ -646,6 +656,50 @@ def _update_brlapi_display_size(size: tuple[int, int]) -> bool:
     return False
 
 
+def _schedule_brlapi_probe() -> None:
+    """Schedule a periodic NoOp probe so brltty hangs are caught early.
+
+    Without this, a hang in brltty is only detected when the user's
+    next real write blocks for _BRLAPI_TASK_TIMEOUT_MS (5s). The probe
+    re-uses the existing task queue, so a hung probe trips the same
+    in-flight timeout and _mark_brlapi_dead path; on success the
+    timer reschedules itself.
+    """
+
+    if _STATE.brlapi_probe_source_id:
+        return
+    _STATE.brlapi_probe_source_id = GLib.timeout_add(
+        _BRLAPI_PROBE_INTERVAL_MS,
+        _fire_brlapi_probe,
+    )
+
+
+def _fire_brlapi_probe() -> bool:
+    """Enqueue a cheap read against brltty so a hang is discovered."""
+
+    _STATE.brlapi_probe_source_id = 0
+    if not _STATE.brlapi_running or _STATE.brlapi_queue is None:
+        return False
+
+    def _probe(brlapi: Any) -> None:
+        # Reading displaySize is the cheapest brltty round-trip we
+        # have; the result is unused -- we only care that the call
+        # returned within the in-flight timeout.
+        _ = brlapi.displaySize
+
+    if _enqueue_brlapi_task(
+        "health probe",
+        _probe,
+        on_success=_schedule_brlapi_probe,
+    ):
+        return False
+    # Couldn't enqueue (worker gone, etc.). Try again next tick if
+    # we're still nominally running.
+    if _STATE.brlapi_running:
+        _schedule_brlapi_probe()
+    return False
+
+
 def _schedule_brlapi_connect_timeout() -> None:
     """Arm the BrlAPI connection timeout timer."""
 
@@ -807,6 +861,8 @@ def _finish_brlapi_connection(
         GLib.IO_IN,
         _brlapi_key_reader,
     )
+
+    _schedule_brlapi_probe()
 
     if _STATE.pending_key_ranges:
         _apply_key_ranges(list(_STATE.pending_key_ranges))
