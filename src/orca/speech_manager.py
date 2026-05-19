@@ -474,15 +474,9 @@ class VoicesPreferencesGrid(preferences_grid_base.PreferencesGridBase):
         """Discard any in-prefs runtime overrides and restore live state from dconf.
 
         Called when the user clicks Cancel. Without this, a runtime override set
-        by any of the prefs widget callbacks would stick past dialog close, and
-        subsequent update_*() calls would re-apply the cancelled choice even
-        though dconf still holds the previous value.
-
-        Covers:
-          - Speech synthesizer combo (the original bug fixed in e05d8868d).
-          - Per-voice-type sliders: rate, pitch, pitch_range, volume, plus
-            family name / language / dialect / gender / variant. These are
-            written by _sync_voice_to_settings() on every slider change.
+        by _on_speech_synthesizer_changed would stick past dialog close, and
+        subsequent update_synthesizer() calls would re-apply the cancelled choice
+        even though dconf still holds the previous value.
         """
 
         registry = gsettings_registry.get_registry()
@@ -490,23 +484,7 @@ class VoicesPreferencesGrid(preferences_grid_base.PreferencesGridBase):
             SpeechManager.SPEECH_SCHEMA,
             SpeechManager.KEY_SYNTHESIZER,
         )
-
-        voice_keys = (
-            SpeechManager.KEY_RATE,
-            SpeechManager.KEY_PITCH,
-            SpeechManager.KEY_PITCH_RANGE,
-            SpeechManager.KEY_VOLUME,
-            SpeechManager.KEY_FAMILY_NAME,
-            SpeechManager.KEY_FAMILY_LANG,
-            SpeechManager.KEY_FAMILY_DIALECT,
-            SpeechManager.KEY_FAMILY_GENDER,
-            SpeechManager.KEY_FAMILY_VARIANT,
-        )
-        for vtype in speechserver.VoiceType:
-            for key in voice_keys:
-                registry.remove_runtime_value(self._VOICE_SCHEMA, key, voice_type=vtype)
-
-        # Re-apply the (now authoritative) dconf values to the live server.
+        # Re-apply the (now authoritative) dconf value to the live server.
         self._manager.update_synthesizer()
         self._has_unsaved_changes = False
 
