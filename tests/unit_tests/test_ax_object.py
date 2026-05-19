@@ -3135,3 +3135,116 @@ class TestAXObject:
         AXObject.HUNG_OBJECTS.clear()
         result = AXObject.check_hung(None, None)
         assert result is False
+
+    # -----------------------------------------------------------------
+    # LONG_LIVED_STATES: primitive-bits state cache (commit 94e36c02d)
+    # -----------------------------------------------------------------
+    # The earlier StateSet-object cache crashed libatspi when a defunct
+    # object's cached StateSet was dereferenced. The replacement stores
+    # only frozenset[int] -- no StateSet object, no stale pointer. These
+    # tests pin the populate / hit / invalidate paths.
+
+    def test_has_state_uses_long_lived_cache_when_populated(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """has_state must hit the int-bit cache without invoking get_state_set."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_object import AXObject
+
+        AXObject.LONG_LIVED_STATES.clear()
+        obj = test_context.Mock(spec=Atspi.Accessible)
+        test_context.patch_object(AXObject, "is_valid", side_effect=lambda o: True)
+
+        # Pre-populate the LL cache with the FOCUSED bit only.
+        AXObject.LONG_LIVED_STATES[hash(obj)] = frozenset({int(Atspi.StateType.FOCUSED)})
+
+        get_state_set_mock = test_context.Mock(side_effect=AssertionError("must not run"))
+        test_context.patch_object(AXObject, "get_state_set", new=get_state_set_mock)
+
+        assert AXObject.has_state(obj, Atspi.StateType.FOCUSED) is True
+        assert AXObject.has_state(obj, Atspi.StateType.EDITABLE) is False
+        get_state_set_mock.assert_not_called()
+        AXObject.LONG_LIVED_STATES.clear()
+
+    def test_has_state_falls_through_to_get_state_set_on_miss(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """has_state must fall through when LONG_LIVED_STATES has no entry."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_object import AXObject
+
+        AXObject.LONG_LIVED_STATES.clear()
+        obj = test_context.Mock(spec=Atspi.Accessible)
+        test_context.patch_object(AXObject, "is_valid", side_effect=lambda o: True)
+
+        state_set_mock = test_context.Mock()
+        state_set_mock.contains = test_context.Mock(return_value=True)
+        get_state_set_mock = test_context.Mock(return_value=state_set_mock)
+        test_context.patch_object(AXObject, "get_state_set", new=get_state_set_mock)
+
+        result = AXObject.has_state(obj, Atspi.StateType.FOCUSED)
+        assert result is True
+        get_state_set_mock.assert_called_once_with(obj)
+
+    def test_invalidate_for_event_drops_state_cache_on_state_changed(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """object:state-changed:* events must drop the LONG_LIVED_STATES entry."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_object import AXObject
+
+        AXObject.LONG_LIVED_STATES.clear()
+        obj = test_context.Mock(spec=Atspi.Accessible)
+        AXObject.LONG_LIVED_STATES[hash(obj)] = frozenset({1, 2, 3})
+
+        AXObject.invalidate_for_event("object:state-changed:focused", obj)
+
+        assert hash(obj) not in AXObject.LONG_LIVED_STATES
+        AXObject.LONG_LIVED_STATES.clear()
+
+    def test_invalidate_for_event_drops_state_cache_on_defunct(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """object:defunct events must drop the LONG_LIVED_STATES entry alongside others."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_object import AXObject
+
+        AXObject.LONG_LIVED_STATES.clear()
+        obj = test_context.Mock(spec=Atspi.Accessible)
+        AXObject.LONG_LIVED_STATES[hash(obj)] = frozenset({1, 2})
+        AXObject.LONG_LIVED_NAMES[hash(obj)] = "before defunct"
+
+        AXObject.invalidate_for_event("object:defunct", obj)
+
+        assert hash(obj) not in AXObject.LONG_LIVED_STATES
+        assert hash(obj) not in AXObject.LONG_LIVED_NAMES
+        AXObject.LONG_LIVED_STATES.clear()
+
+    def test_invalidate_for_event_state_change_leaves_other_entries(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """Invalidating one object's state must not touch any other entries."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_object import AXObject
+
+        AXObject.LONG_LIVED_STATES.clear()
+        obj_a = test_context.Mock(spec=Atspi.Accessible, name="a")
+        obj_b = test_context.Mock(spec=Atspi.Accessible, name="b")
+        AXObject.LONG_LIVED_STATES[hash(obj_a)] = frozenset({1})
+        AXObject.LONG_LIVED_STATES[hash(obj_b)] = frozenset({2})
+
+        AXObject.invalidate_for_event("object:state-changed:focused", obj_a)
+
+        assert hash(obj_a) not in AXObject.LONG_LIVED_STATES
+        assert AXObject.LONG_LIVED_STATES[hash(obj_b)] == frozenset({2})
+        AXObject.LONG_LIVED_STATES.clear()
