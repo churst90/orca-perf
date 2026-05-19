@@ -1,4 +1,5 @@
 subdir('scripts')
+subdir('util')
 
 configure_file(
   input: 'orca_bin.py.in',
