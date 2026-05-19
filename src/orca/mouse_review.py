@@ -63,6 +63,7 @@ from . import (
 )
 from .ax_component import AXComponent
 from .ax_object import AXObject
+from .util.debounce import DebouncedCallable
 from .ax_text import AXText
 from .ax_utilities import AXUtilities
 from .command import Command, KeyboardCommand
@@ -433,13 +434,13 @@ class MouseReviewer(Extension):
         self._event_listener: Atspi.EventListener = Atspi.EventListener.new(self._listener)
         self.in_mouse_event: bool = False
         self._event_queue: deque = deque()
-        # Single pending GLib timeout source for coalescing bursts of mouse
-        # events. Without this the listener scheduled a new timer per
-        # event; rapid mouse movement could leave hundreds of timer
-        # sources pending in the main loop. The processor logic already
-        # discards events when more remain queued, so we just need to
-        # make sure exactly one timer is armed at a time.
-        self._pending_timer_id: int = 0
+        # Single-pending GLib timer for coalescing mouse-event bursts.
+        # The processor logic discards events when more remain queued, so
+        # one armed timer per burst is sufficient. Two debouncers because
+        # the deprecated and current listeners dispatch to different
+        # processor methods.
+        self._coalesce_debouncer = DebouncedCallable(self._process_event)
+        self._coalesce_debouncer_deprecated = DebouncedCallable(self._process_event_deprecated)
         self._mouse_review_capable: bool = False
         self._use_atspi: bool = False
 
@@ -831,7 +832,6 @@ class MouseReviewer(Extension):
             self._current_mouse_over = new
 
     def _process_event_deprecated(self) -> bool:
-        self._pending_timer_id = 0
         if not self._event_queue:
             return False
 
@@ -857,10 +857,9 @@ class MouseReviewer(Extension):
 
         if event.type.startswith("mouse:abs"):
             self._event_queue.append(event)
-            self._arm_timer(self._process_event_deprecated)
+            self._coalesce_debouncer_deprecated.arm(50)
 
     def _process_event(self) -> bool:
-        self._pending_timer_id = 0
         if not self._event_queue:
             return False
 
@@ -885,14 +884,7 @@ class MouseReviewer(Extension):
         """Listener for pointer-moved events from devices."""
 
         self._event_queue.append([obj, x, y])
-        self._arm_timer(self._process_event)
-
-    def _arm_timer(self, callback) -> None:
-        """Schedules callback in 50ms if no timer is already pending."""
-
-        if self._pending_timer_id:
-            return
-        self._pending_timer_id = GLib.timeout_add(50, callback)
+        self._coalesce_debouncer.arm(50)
 
 
 _reviewer = MouseReviewer()

@@ -58,6 +58,7 @@ from . import (
 )
 from .ax_hypertext import AXHypertext
 from .ax_object import AXObject
+from .util.debounce import DebouncedCallable
 from .ax_table import AXTable
 from .ax_text import AXText
 from .ax_utilities import AXUtilities
@@ -143,8 +144,8 @@ class StructuralNavigator(Extension):
         # time the next H/K press lands the rebuild is usually done so the
         # press is served instantly from the now-fresh cache.
         self._nav_cache_stale_keys: set[tuple[int, str]] = set()
-        self._nav_cache_drop_timer_id: int | None = None
         self._NAV_CACHE_DROP_DELAY_MS = 150
+        self._nav_cache_drop_debouncer = DebouncedCallable(self._drop_stale_keys)
         # Keys that are queued for idle rebuild. Bounds the work even if
         # bursts keep marking entries stale faster than idle ticks fire.
         self._nav_cache_rebuilding: set[tuple[int, str]] = set()
@@ -157,7 +158,7 @@ class StructuralNavigator(Extension):
         # 6 sec systemd watchdog, killing Orca. We coalesce the final
         # present (scroll + speech) when a burst is detected; focus and
         # cursor still move on each press via emit_region_changed.
-        self._present_timer_id: int | None = None
+        self._present_debouncer = DebouncedCallable(self._present_fire)
         self._present_pending: tuple | None = None
         self._last_present_time: float = 0.0
         self._PRESENT_BURST_WINDOW = 0.10  # 100ms
@@ -256,11 +257,7 @@ class StructuralNavigator(Extension):
             for k in self._nav_cache:
                 if k[0] in ancestor_hashes:
                     self._nav_cache_stale_keys.add(k)
-            scheduled = self._nav_cache_drop_timer_id is not None
-        if not scheduled:
-            self._nav_cache_drop_timer_id = GLib.timeout_add(
-                self._NAV_CACHE_DROP_DELAY_MS, self._drop_stale_keys
-            )
+        self._nav_cache_drop_debouncer.arm(self._NAV_CACHE_DROP_DELAY_MS)
 
     def _drop_stale_keys(self) -> bool:
         """GLib timer callback: schedule background rebuild for stale keys.
@@ -276,7 +273,6 @@ class StructuralNavigator(Extension):
         with self._nav_cache_lock:
             stale = list(self._nav_cache_stale_keys)
             self._nav_cache_stale_keys.clear()
-            self._nav_cache_drop_timer_id = None
 
             # Build the list of (key, rebuilder) pairs we can refresh
             # in place. Drop keys with no rebuilder -- those were never
@@ -1266,16 +1262,15 @@ class StructuralNavigator(Extension):
         # is visible to focus tracking.
         now = time.monotonic()
         in_burst = (
-            self._present_timer_id is not None
+            self._present_debouncer.is_pending()
             or (now - self._last_present_time) < self._PRESENT_BURST_WINDOW
         )
         if in_burst:
-            if self._present_timer_id is not None:
-                GLib.source_remove(self._present_timer_id)
+            # arm_or_reset: each new event cancels the prior fire and
+            # reschedules, so we present only the final target after the
+            # burst settles.
             self._present_pending = (script, obj, offset)
-            self._present_timer_id = GLib.timeout_add(
-                self._PRESENT_DEFER_MS, self._present_fire,
-            )
+            self._present_debouncer.arm_or_reset(self._PRESENT_DEFER_MS)
             return
 
         # IMPORTANT: stamp _last_present_time AFTER the call returns, not
@@ -1290,7 +1285,6 @@ class StructuralNavigator(Extension):
     def _present_fire(self) -> bool:
         """Timer callback: present the final target of a held-key burst."""
 
-        self._present_timer_id = None
         pending = self._present_pending
         self._present_pending = None
         if pending is None:

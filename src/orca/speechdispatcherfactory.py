@@ -35,6 +35,7 @@ from . import debug, guilabels, speechserver, systemd
 from .acss import ACSS
 from .speechserver import CapitalizationStyle, PunctuationStyle
 from .ssml import SSML, SSMLCapabilities
+from .util.debounce import DebouncedCallable
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -98,7 +99,7 @@ class SpeechServer(speechserver.SpeechServer):
             tuple[str, str, str | None, int | None],
             list[tuple[str, str, str | None]],
         ] = {}
-        self._health_probe_source_id: int = 0
+        self._health_probe_debouncer = DebouncedCallable(self._fire_health_probe)
         if not _SPEECHD_AVAILABLE:
             msg = "ERROR: Speech Dispatcher is not available"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
@@ -649,23 +650,16 @@ class SpeechServer(speechserver.SpeechServer):
     def _schedule_health_probe(self) -> None:
         """Arms the connection-liveness probe if not already scheduled."""
 
-        if self._health_probe_source_id:
-            return
-        self._health_probe_source_id = GLib.timeout_add(
-            self._HEALTH_PROBE_INTERVAL_MS, self._fire_health_probe
-        )
+        self._health_probe_debouncer.arm(self._HEALTH_PROBE_INTERVAL_MS)
 
     def _cancel_health_probe(self) -> None:
         """Cancels the pending health probe if one is scheduled."""
 
-        if self._health_probe_source_id:
-            GLib.source_remove(self._health_probe_source_id)
-            self._health_probe_source_id = 0
+        self._health_probe_debouncer.cancel()
 
     def _fire_health_probe(self) -> bool:
         """Cheap SSIP round-trip; _send_command auto-reconnects on failure."""
 
-        self._health_probe_source_id = 0
         if self._client is None:
             return False
         # _send_command swallows SSIPCommunicationError and calls reset()

@@ -61,6 +61,7 @@ from .ax_utilities import AXUtilities
 from .ax_utilities_event import TextEventReason
 from .command import BrailleCommand, Command, KeyboardCommand
 from .extension import Extension
+from .util.debounce import DebouncedCallable
 
 if TYPE_CHECKING:
     from .scripts import default
@@ -100,7 +101,7 @@ class FlatReviewPresenter(Extension):
         self._location_invalidated: bool = False
         self._pending_caret_moved: Atspi.Event | None = None
         self._pending_text_inserted: Atspi.Event | None = None
-        self._idle_id: int = 0
+        self._pending_events_debouncer = DebouncedCallable(self._process_pending_events)
         super().__init__()
 
     def _listener(self, event: Atspi.Event) -> None:
@@ -118,13 +119,11 @@ class FlatReviewPresenter(Extension):
         elif event.type == "object:text-caret-moved":
             self._pending_caret_moved = event
 
-        if self._idle_id == 0:
-            self._idle_id = GLib.idle_add(self._process_pending_events)
+        self._pending_events_debouncer.arm_idle()
 
     def _process_pending_events(self) -> bool:
         """Processes pending events. Returns False so GLib doesn't reschedule."""
 
-        self._idle_id = 0
         caret_moved = self._pending_caret_moved
         text_inserted = self._pending_text_inserted
         self._pending_caret_moved = None
@@ -595,9 +594,7 @@ class FlatReviewPresenter(Extension):
         self._deregister_event_listeners()
         self._context_invalidated = False
         self._location_invalidated = False
-        if self._idle_id:
-            GLib.source_remove(self._idle_id)
-            self._idle_id = 0
+        self._pending_events_debouncer.cancel()
         self._pending_caret_moved = None
         self._pending_text_inserted = None
         focus = focus_manager.get_manager().get_locus_of_focus()
