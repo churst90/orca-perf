@@ -47,6 +47,11 @@ from . import (
 # with dbus_service via Extension.__init__. Without this call the
 # org.gnome.Orca1.Telemetry interface is not published on the bus.
 _ = telemetry.get_telemetry()
+
+# Optional ORCA_STRESS=... environment-gated stress harness. Off by
+# default; init_from_environment() is a no-op when the env var is unset.
+from . import stress_mode  # noqa: E402  pylint: disable=wrong-import-position
+stress_mode.init_from_environment()
 from .ax_object import AXObject
 from .ax_utilities import AXUtilities
 from .ax_value import AXValue

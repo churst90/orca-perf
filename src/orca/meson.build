@@ -152,6 +152,7 @@ lib_sources = [
   'speechserver.py',
   'spiel.py',
   'ssml.py',
+  'stress_mode.py',
   'structural_navigator.py',
   'systemd.py',
   'system_information_presenter.py',
