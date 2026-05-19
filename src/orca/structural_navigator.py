@@ -1289,7 +1289,8 @@ class StructuralNavigator(Extension):
         # during the block would see "150ms elapsed > 100ms window" and
         # bypass the coalesce. Stamping after means subsequent queued
         # events see "~0ms since last present" and properly defer.
-        script.present_object(obj, offset=offset, interrupt=True)
+        presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
+        script.present_object(obj, offset=offset)
         self._last_present_time = time.monotonic()
 
     def _present_fire(self) -> bool:
@@ -1304,7 +1305,8 @@ class StructuralNavigator(Extension):
         if not AXObject.is_valid(obj):
             return False
 
-        script.present_object(obj, offset=offset, interrupt=True)
+        presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
+        script.present_object(obj, offset=offset)
         self._last_present_time = time.monotonic()
         return False
 

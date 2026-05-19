@@ -46,7 +46,7 @@ from .ax_object import AXObject
 from .ax_text import AXText
 from .ax_utilities import AXUtilities
 from .braille_rolenames import short_role_names
-from .generator import GeneratorContext, GeneratorMode
+from .generator import GeneratorContext, GeneratorMode, WhereAmI
 
 if TYPE_CHECKING:
     from . import script
@@ -117,8 +117,6 @@ class BrailleGenerator(generator.Generator):
         if not self._context.enabled:
             return [[], None]
 
-        if obj == self._context.focus and not args.get("formatType"):
-            args["formatType"] = "focused"
         result = self.generate(obj, **args)
 
         # We guess at the focused region.  It's going to be a
@@ -353,7 +351,9 @@ class BrailleGenerator(generator.Generator):
         return result
 
     def _generate_keyboard_mnemonic(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if not (self._context.present_mnemonics or args.get("forceMnemonic", False)):
+        if not (
+            self._context.present_mnemonics or self._context.where_am_i_type == WhereAmI.DETAILED
+        ):
             return []
 
         return super()._generate_keyboard_mnemonic(obj, **args)

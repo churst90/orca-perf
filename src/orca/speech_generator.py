@@ -1176,7 +1176,7 @@ class SpeechGenerator(generator.Generator):
                 self.generate(
                     prior_obj,
                     role=self._get_functional_role(prior_obj),
-                    formatType="focused",
+                    priorObj=prior_obj,
                     leaving=True,
                 ),
             )
@@ -1240,9 +1240,10 @@ class SpeechGenerator(generator.Generator):
 
     @log_generator_output
     def _generate_position_in_list(self, obj: Atspi.Accessible, **args) -> list[Any]:
+        detailed = self._context.where_am_i_type == WhereAmI.DETAILED
         if (
             self._only_speak_displayed_text()
-            or not (self._context.speak_position_in_set or args.get("forceList", False))
+            or not (self._context.speak_position_in_set or detailed)
             or args.get("formatType") == "ancestor"
         ):
             return []
@@ -1290,7 +1291,10 @@ class SpeechGenerator(generator.Generator):
         if self._only_speak_displayed_text():
             return []
 
-        if not (self._context.speak_widget_mnemonic or args.get("forceMnemonic", False)):
+        if not (
+            self._context.speak_widget_mnemonic
+            or self._context.where_am_i_type == WhereAmI.DETAILED
+        ):
             return []
 
         if result := super()._generate_keyboard_mnemonic(obj, **args):
@@ -1672,7 +1676,7 @@ class SpeechGenerator(generator.Generator):
         if self._only_speak_displayed_text():
             return []
 
-        if args.get("alreadyFocused"):
+        if args.get("priorObj") == obj:
             return []
 
         result = super()._generate_state_required(obj, **args)
@@ -2190,7 +2194,7 @@ class SpeechGenerator(generator.Generator):
             return []
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_details_for(obj, **args)
         if format_type == "unfocused":
             return self._generate_old_ancestors(obj, **args) + self._generate_new_ancestors(
@@ -2206,7 +2210,7 @@ class SpeechGenerator(generator.Generator):
 
         result = self._generate_default_prefix(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return result
 
         result += self._generate_accessible_label_and_name(obj, **args)
@@ -2231,7 +2235,7 @@ class SpeechGenerator(generator.Generator):
         # present (panels, groupings, dialogs) already generate it. If we
         # include it here, it will be double-presented.
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return []
 
         result = []
@@ -2298,7 +2302,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             result = self._generate_accessible_label_and_name(obj, **args)
             result += self._generate_accessible_role(obj, **args)
             return result
@@ -2331,7 +2335,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             result = self._generate_accessible_label_and_name(obj, **args)
             result += self._generate_accessible_role(obj, **args)
             return result
@@ -2371,7 +2375,7 @@ class SpeechGenerator(generator.Generator):
 
         result += self._generate_text_line(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return result
 
         result += self._generate_default_suffix(obj, **args)
@@ -2429,7 +2433,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the check-box role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_checked(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -2450,7 +2454,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the check-menu-item role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_checked(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -2475,7 +2479,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the color-chooser role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_value(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -2493,8 +2497,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the column-header role."""
 
         result = []
-        format_type = args.get("formatType", "unfocused")
-        if format_type != "focused" and self._generate_text_substring(obj, **args):
+        if args.get("priorObj") != obj and self._generate_text_substring(obj, **args):
             result += self._generate_text_line(obj, **args)
         if not result:
             result += self._generate_accessible_label_and_name(obj, **args)
@@ -2515,7 +2518,7 @@ class SpeechGenerator(generator.Generator):
         result += label_and_name
         result += self._generate_accessible_role(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             if AXUtilities.is_editable(obj):
                 text_substring = self._generate_text_substring(obj, **args)
                 if text_substring:
@@ -2544,7 +2547,7 @@ class SpeechGenerator(generator.Generator):
         result += self._generate_accessible_label_and_name(obj, **args)
         result += self._generate_accessible_role(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return result
 
         result += self._generate_pause(obj, **args)
@@ -2559,7 +2562,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_start_of_deletion(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -2578,7 +2581,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_start_of_insertion(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -2624,7 +2627,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the description-term role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return []
 
         result = self._generate_default_prefix(obj, **args)
@@ -2654,7 +2657,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the description-value role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return []
 
         result = self._generate_default_prefix(obj, **args)
@@ -2688,7 +2691,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the dial role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_value(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -2707,8 +2710,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the dialog role."""
 
         result = self._generate_default_prefix(obj, **args)
-        format_type = args.get("formatType", "unfocused")
-        if format_type != "focused":
+        if args.get("priorObj") != obj:
             result = self._generate_text_expanding_embedded_objects(obj, **args)
             if result:
                 return result
@@ -2785,7 +2787,7 @@ class SpeechGenerator(generator.Generator):
         result += self._generate_accessible_role(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return result
 
         result += self._generate_pause(obj, **args)
@@ -2804,7 +2806,7 @@ class SpeechGenerator(generator.Generator):
         result += self._generate_accessible_role(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return result
 
         result += self._generate_pause(obj, **args)
@@ -2840,8 +2842,7 @@ class SpeechGenerator(generator.Generator):
         result = self._generate_default_prefix(obj, **args)
         result += self._generate_accessible_label_and_name(obj, **args)
 
-        format_type = args.get("formatType", "unfocused")
-        if format_type != "focused":
+        if args.get("priorObj") != obj:
             result += self._generate_text_expanding_embedded_objects(
                 obj,
                 **args,
@@ -2881,7 +2882,7 @@ class SpeechGenerator(generator.Generator):
 
         result = self._generate_default_prefix(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"] and result:
+        if (format_type == "ancestor" or args.get("priorObj") == obj) and result:
             return result
 
         result += self._generate_accessible_label_and_name(obj, **args)
@@ -2936,7 +2937,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_accessible_label_and_name(
                 obj, **args
             ) + self._generate_accessible_role(obj, **args)
@@ -2954,7 +2955,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the frame role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_accessible_label_and_name(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -2977,7 +2978,7 @@ class SpeechGenerator(generator.Generator):
 
         result = self._generate_default_prefix(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"] and result:
+        if (format_type == "ancestor" or args.get("priorObj") == obj) and result:
             return result
 
         if self._generate_text_substring(obj, **args):
@@ -3101,7 +3102,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             result = self._generate_accessible_role(obj, **args)
             result += self._generate_accessible_label_and_name(obj, **args)
             return result
@@ -3140,7 +3141,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the level-bar role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_value(obj, **args)
 
         result = []
@@ -3186,7 +3187,7 @@ class SpeechGenerator(generator.Generator):
 
         result = self._generate_default_prefix(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"] and result:
+        if (format_type == "ancestor" or args.get("priorObj") == obj) and result:
             return result
 
         result += self._generate_accessible_label_and_name(obj, **args)
@@ -3208,7 +3209,7 @@ class SpeechGenerator(generator.Generator):
         format_type = args.get("formatType", "unfocused")
         result += self._generate_accessible_label_and_name(obj, **args)
 
-        if format_type not in ["focused", "ancestor"]:
+        if format_type != "ancestor" and args.get("priorObj") != obj:
             result += self._generate_focused_item(obj, **args)
             result += self._generate_pause(obj, **args)
 
@@ -3225,7 +3226,7 @@ class SpeechGenerator(generator.Generator):
 
         result = self._generate_default_prefix(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             result += self._generate_state_checked_if_checkable(obj, **args)
             result += self._generate_pause(obj, **args)
             result += self._generate_state_expanded(obj, **args)
@@ -3261,7 +3262,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_start_of_mark(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3293,7 +3294,7 @@ class SpeechGenerator(generator.Generator):
 
         result = self._generate_default_prefix(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             result += self._generate_accessible_label_and_name(obj, **args)
             result += self._generate_accessible_role(obj, **args)
             return result
@@ -3331,7 +3332,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the menu-item role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_expanded(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3418,7 +3419,7 @@ class SpeechGenerator(generator.Generator):
 
         result = self._generate_default_prefix(obj, **args)
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"] and result:
+        if (format_type == "ancestor" or args.get("priorObj") == obj) and result:
             return result
 
         if self._generate_text_substring(obj, **args):
@@ -3471,8 +3472,7 @@ class SpeechGenerator(generator.Generator):
 
         result = []
         result += self._generate_progress_bar_index(obj, **args)
-        format_type = args.get("formatType", "unfocused")
-        if format_type != "focused":
+        if args.get("priorObj") != obj:
             result += self._generate_accessible_label_and_name(obj, **args)
         result += self._generate_progress_bar_value(obj, **args) or self._generate_accessible_role(
             obj,
@@ -3485,7 +3485,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the push-button role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_expanded(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3509,7 +3509,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the radio-button role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_selected_for_radio_button(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3537,7 +3537,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the radio-menu-item role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_selected_for_radio_button(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3576,7 +3576,7 @@ class SpeechGenerator(generator.Generator):
             result += self._generate_accessible_role(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return result
 
         result += self._generate_pause(obj, **args)
@@ -3593,8 +3593,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the row-header role."""
 
         result = self._generate_default_prefix(obj, **args)
-        format_type = args.get("formatType", "unfocused")
-        if format_type != "focused" and self._generate_text_substring(obj, **args):
+        if args.get("priorObj") != obj and self._generate_text_substring(obj, **args):
             result += self._generate_text_line(obj, **args)
         if not result:
             result += self._generate_accessible_label_and_name(obj, **args)
@@ -3616,7 +3615,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the scroll-bar role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_value(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3669,7 +3668,7 @@ class SpeechGenerator(generator.Generator):
         result += self._generate_state_sensitive(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return result
 
         result += (
@@ -3686,7 +3685,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the slider role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_value(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3704,7 +3703,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the spin-button role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_text_content(obj, **args) or self._generate_value(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3724,7 +3723,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the split-pane role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type == "focused":
+        if args.get("priorObj") == obj:
             return self._generate_value(obj, **args)
         if format_type == "ancestor":
             return []
@@ -3764,7 +3763,7 @@ class SpeechGenerator(generator.Generator):
         result += self._generate_accessible_role(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return result
 
         content = self._generate_descendants(obj, **args) or self._generate_text_content(
@@ -3795,7 +3794,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_accessible_role(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3816,7 +3815,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the switch role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_checked_for_switch(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3875,7 +3874,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the table-cell role in the context of its row."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type == "focused":
+        if args.get("priorObj") == obj:
             result = self._generate_state_checked_for_cell(obj, **args)
             if result and not isinstance(result[-1], Pause):
                 result += self._generate_pause(obj, **args)
@@ -3917,8 +3916,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the table-column-header role."""
 
         result = self._generate_default_prefix(obj, **args)
-        format_type = args.get("formatType", "unfocused")
-        if format_type != "focused" and self._generate_text_substring(obj, **args):
+        if args.get("priorObj") != obj and self._generate_text_substring(obj, **args):
             result += self._generate_text_line(obj, **args)
         if not result:
             result += self._generate_accessible_label_and_name(obj, **args)
@@ -3937,7 +3935,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the table-row role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_expanded(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -3956,8 +3954,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the table-row-header role."""
 
         result = self._generate_default_prefix(obj, **args)
-        format_type = args.get("formatType", "unfocused")
-        if format_type != "focused" and self._generate_text_substring(obj, **args):
+        if args.get("priorObj") != obj and self._generate_text_substring(obj, **args):
             result += self._generate_text_line(obj, **args)
         if not result:
             result += self._generate_accessible_label_and_name(obj, **args)
@@ -4023,7 +4020,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the toggle-button role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_expanded(obj, **args) or self._generate_state_pressed(
                 obj,
                 **args,
@@ -4054,7 +4051,7 @@ class SpeechGenerator(generator.Generator):
             return self._generate_leaving(obj, **args)
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_accessible_role(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)
@@ -4072,7 +4069,7 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the tree-item role."""
 
         format_type = args.get("formatType", "unfocused")
-        if format_type in ["focused", "ancestor"]:
+        if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_state_expanded(obj, **args)
 
         result = self._generate_default_prefix(obj, **args)

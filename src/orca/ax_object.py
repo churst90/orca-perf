@@ -413,21 +413,14 @@ class AXObject:
     ) -> bool:
         """Returns True if obj or its app is hung, propagating obj-hung to app."""
 
-        # The prune thread can delete keys between our membership test
-        # and the timestamp read at line "HUNG_OBJECTS[hash(app)] = ..." below,
-        # so all access is under _lock. .get() with sentinel avoids KeyError
-        # on the timestamp copy when the obj entry was just pruned.
-        with AXObject._lock:
-            obj_ts = AXObject.HUNG_OBJECTS.get(hash(obj)) if obj is not None else None
-            app_ts = AXObject.HUNG_OBJECTS.get(hash(app)) if app is not None else None
-            obj_hung = obj_ts is not None
-            app_hung = app_ts is not None
-            if obj_hung and app is not None and not app_hung:
-                tokens = ["AXObject: Marking", app, "as hung due to hung source"]
-                debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-                AXObject.HUNG_OBJECTS[hash(app)] = obj_ts
-                app_hung = True
-        return obj_hung or app_hung
+        obj_hung_ts = AXObject.HUNG_OBJECTS.get(hash(obj)) if obj is not None else None
+        app_hung = app is not None and hash(app) in AXObject.HUNG_OBJECTS
+        if obj_hung_ts is not None and app is not None and not app_hung:
+            tokens = ["AXObject: Marking", app, "as hung due to hung source"]
+            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+            AXObject.HUNG_OBJECTS[hash(app)] = obj_hung_ts
+            app_hung = True
+        return obj_hung_ts is not None or app_hung
 
     @staticmethod
     def _set_known_dead_status(obj: Atspi.Accessible, is_dead: bool) -> None:

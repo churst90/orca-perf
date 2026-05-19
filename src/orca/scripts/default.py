@@ -887,7 +887,8 @@ class Script(script.Script):
         """Callback for object:state-changed:checked accessibility events."""
 
         if AXUtilities.is_presentable_checked_change(event):
-            self.present_object(event.source, alreadyFocused=True, interrupt=True)
+            presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
+            self.present_object(event.source, prior_obj=event.source)
 
         return True
 
@@ -1011,7 +1012,8 @@ class Script(script.Script):
         if not AXUtilities.is_presentable_expanded_change(event):
             return True
 
-        self.present_object(event.source, alreadyFocused=True, interrupt=True)
+        presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
+        self.present_object(event.source, prior_obj=event.source)
         details = AXUtilities.get_details_content(event.source)
         for detail in details:
             presentation_manager.get_manager().speak_message(detail)
@@ -1022,7 +1024,8 @@ class Script(script.Script):
         """Callback for object:state-changed:indeterminate accessibility events."""
 
         if AXUtilities.is_presentable_indeterminate_change(event):
-            self.present_object(event.source, alreadyFocused=True, interrupt=True)
+            presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
+            self.present_object(event.source, prior_obj=event.source)
 
         return True
 
@@ -1079,7 +1082,8 @@ class Script(script.Script):
         """Callback for object:state-changed:pressed accessibility events."""
 
         if AXUtilities.is_presentable_pressed_change(event):
-            self.present_object(event.source, alreadyFocused=True, interrupt=True)
+            presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
+            self.present_object(event.source, prior_obj=event.source)
 
         return True
 
@@ -1190,13 +1194,15 @@ class Script(script.Script):
             if not was_f1 and not mouse_review.get_reviewer().get_present_tooltips():
                 return True
             if event.detail1:
-                self.present_object(obj, interrupt=True)
+                presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
+                self.present_object(obj)
                 return True
 
             focus = focus_manager.get_manager().get_locus_of_focus()
             if focus and was_f1:
                 obj = focus
-                self.present_object(obj, priorObj=event.source, interrupt=True)
+                presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
+                self.present_object(obj, prior_obj=event.source)
                 return True
 
         return True
@@ -1437,7 +1443,7 @@ class Script(script.Script):
             self,
             event.source,
             generate_sound=True,
-            alreadyFocused=True,
+            priorObj=event.source,
             isProgressBarUpdate=AXUtilities.is_progress_bar(event.source),
         )
         return True
@@ -1684,13 +1690,18 @@ class Script(script.Script):
         self.say_phrase(obj, start_offset, end_offset)
         AXUtilities.set_last_text_unit_spoken(TextUnit.WORD)
 
-    def present_object(self, obj: Atspi.Accessible, **args) -> None:
+    def present_object(
+        self,
+        obj: Atspi.Accessible,
+        offset: int | None = None,
+        prior_obj: Atspi.Accessible | None = None,
+        **args,
+    ) -> None:
         """Presents the current object."""
 
-        tokens = ["DEFAULT: Presenting object", obj, ". Interrupt:", args.get("interrupt", False)]
+        tokens = ["DEFAULT: Presenting object", obj]
         debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
-        offset = args.get("offset")
         if offset is not None:
             AXText.set_caret_offset(obj, offset)
 
@@ -1699,5 +1710,6 @@ class Script(script.Script):
             self,
             obj,
             generate_braille=not speech_only,
+            priorObj=prior_obj,
             **args,
         )
