@@ -413,14 +413,22 @@ class AXObject:
     ) -> bool:
         """Returns True if obj or its app is hung, propagating obj-hung to app."""
 
-        obj_hung_ts = AXObject.HUNG_OBJECTS.get(hash(obj)) if obj is not None else None
-        app_hung = app is not None and hash(app) in AXObject.HUNG_OBJECTS
-        if obj_hung_ts is not None and app is not None and not app_hung:
-            tokens = ["AXObject: Marking", app, "as hung due to hung source"]
-            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            AXObject.HUNG_OBJECTS[hash(app)] = obj_hung_ts
-            app_hung = True
-        return obj_hung_ts is not None or app_hung
+        # Locked: _prune_hung_objects iterates HUNG_OBJECTS.items() under
+        # _lock; an unlocked write here can trigger "dictionary changed
+        # size during iteration" in the prune thread. Lock is uncontended
+        # in steady state and only matters when prune is mid-iteration,
+        # so the cost on the hot path is microseconds.
+        with AXObject._lock:
+            obj_hung_ts = (
+                AXObject.HUNG_OBJECTS.get(hash(obj)) if obj is not None else None
+            )
+            app_hung = app is not None and hash(app) in AXObject.HUNG_OBJECTS
+            if obj_hung_ts is not None and app is not None and not app_hung:
+                tokens = ["AXObject: Marking", app, "as hung due to hung source"]
+                debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+                AXObject.HUNG_OBJECTS[hash(app)] = obj_hung_ts
+                app_hung = True
+            return obj_hung_ts is not None or app_hung
 
     @staticmethod
     def _set_known_dead_status(obj: Atspi.Accessible, is_dead: bool) -> None:
