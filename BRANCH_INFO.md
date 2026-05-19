@@ -90,6 +90,65 @@ Five more from the deferred list:
   handler swaps the new one in. By the time the next H/K press
   lands the cache is typically already refreshed.
 
+**Round-4/5/6 (commits `40c404eff` through `733ff2f99`)**
+
+Smaller verified-real-bug fixes plus diagnostics from the holistic
+audit and the upstream merge. See `FINDINGS.md` for the per-item
+rationale and which items were skipped as false positives. Highlights:
+
+- `40c404eff` — `HUNG_OBJECTS` lock (regression inherited from the
+  upstream merge `c1d969e25`).
+- `5d9954ebe` — D-Bus call-rate WARNING diagnostic (no behavior
+  change; visibility only).
+- `bf34212fd` — 10s BrlAPI NoOp probe so a hung brltty is caught
+  during idle time instead of stalling the next real write.
+- `282fa31ed` — Player.shutdown() releases bus watches + signal
+  handlers so GStreamer can finalize.
+- `9b0b9e039` — `rename_profile()` rolls back partial new-profile
+  state if copy/metadata fails mid-flight.
+- `8be6260cb` — 30s SSIP liveness probe; speech-dispatcher restart
+  is caught during idle time so the next user-driven speak finds a
+  healthy connection.
+- Documentation: `FINDINGS.md` Parts 1-3 (holistic + cross-stack +
+  subsystem audits).
+
+**Round-7 (commits `f5b5131b9` through `d6465f7d2`)**
+
+The "remaining 20%" plus the smaller P-tier findings:
+
+- `f5b5131b9` — `notification_presenter` to `collections.deque` plus
+  `_current_index` adjustment on truncation. Subsumes P1/P2/P3.
+- `a7e6ede68` — `mouse_review` single-pending-timer pattern (P4).
+- `ac44497b3` — `phonnames.py` defensive parse with English fallback
+  (P7) so a malformed translation no longer breaks Orca startup.
+- `9d0d24686` — `focus_manager.is_in_preferences_window()` broadened
+  to cover descendant dialogs via same-application comparison. The
+  root cause that the synth-revert fix routed around.
+- `0adbbc56b` — `VoicesPreferencesGrid.revert_changes()` extended to
+  cover rate/pitch/pitch-range/volume/family-* runtime overrides,
+  not just the synthesizer combo.
+- `94e36c02d` — `LONG_LIVED_STATES` reintroduces the long-lived state
+  cache that `6445b86e4` had to revert. Stores `frozenset[int]`
+  instead of `Atspi.StateSet`, so a defunct object can no longer
+  cause a stale-pointer segfault inside libatspi. Reclaims roughly
+  the 3 percentage points of cache hit rate that the earlier
+  revert lost.
+- `adcbbd3a3`, `d6465f7d2` — unit tests for the upstream-candidate
+  patches (HUNG_OBJECTS sync, `_is_descendant` walk-and-cache,
+  `_iter_text_with_language`, `LONG_LIVED_STATES`). 21 new tests,
+  all green.
+
+Two items from the round-7 plan were intentionally deferred:
+- Caret-order pre-computation (multi-day; risk of regression on a
+  critical user-path outweighs the marginal gain).
+- True incremental web nav index (the existing background-rebuild
+  in `740d84192` already extracts the perceived-speed benefit;
+  going from background-rebuild to mutate-cached-list is a
+  CPU-bandwidth win during idle, not a user-latency win, and the
+  sort-order correctness risk is real).
+Both are documented in the commit log; revisit if either becomes
+a measured user pain point.
+
 **Speech-prefs correctness (commit `e05d8868d`)**
 
 Fixes a regression in the GSettings-based prefs system where changing
@@ -220,41 +279,36 @@ this branch doesn't address it. Spiel migration would.
 Things that are known-broken or known-incomplete in this branch and
 worth picking up next:
 
-- **Same runtime-override gap may exist on other speech-prefs combos.**
-  The synth fix (`e05d8868d`) only patches `_on_speech_synthesizer_changed`
-  and `VoicesPreferencesGrid.save_settings`. The speech-system combo
-  (Speech Dispatcher vs. Spiel) and the voice-family combos use the
-  same architecture and probably exhibit the same revert-on-focus bug
-  when changed during prefs. Reproducing requires multiple speech
-  servers — the author only has Speech Dispatcher installed, so this
-  hasn't been verified.
-- **`focus_manager.is_in_preferences_window()` is too narrow.** It only
-  matches the prefs root window, not its descendant dialogs (Global
-  Voice Settings, Voice Defaults). That's why `update_synthesizer()`
-  was reaching back into dconf in the first place. The runtime-override
-  patch routes around the symptom; the underlying guard should be
-  broadened to "any window owned by the Orca app while prefs is open."
+All of the originally documented open work has been addressed in
+rounds 7+ except where noted:
+
+- **`focus_manager.is_in_preferences_window()` broadened** in
+  `9d0d24686`. Now treats any window in the same application as the
+  prefs root as "in preferences," so descendant dialogs (Voice
+  Defaults, Global Voice Settings) no longer slip past the guard.
+  The root cause that the synth-revert fix routed around.
 - **`AXObject._NAME_LL_CACHE_DISABLED`** — resolved in `2176c4952`,
   cache is back on. Held-key coalesce in `ccda9d591` was the actual
-  fix for the wrong-window-title symptom. Leaving this note as a
-  pointer for anyone reading older commit messages.
-- **Long-lived StateSet cache reverted (`6445b86e4`).** The right
-  approach is probably to cache primitive state bits (a frozenset of
-  ints) instead of the live `Atspi.StateSet` object. Not attempted yet.
+  fix for the wrong-window-title symptom.
+- **Long-lived state cache** — primitive-bits version landed in
+  `94e36c02d`. Stores `frozenset[int]` instead of the StateSet object;
+  defunct objects can no longer cause a stale-pointer crash.
+- **Cancel-revert UX** for the speech grid now also reverts
+  rate/pitch/pitch-range/volume/family-* runtime overrides, not just
+  the synthesizer combo (`0adbbc56b`).
+- **Same runtime-override gap on other prefs combos** — the
+  is_in_preferences_window fix above eliminates the root cause for
+  all combos at once, so this is no longer a separate hazard.
 - **Spiel migration in `src/orca/spiel.py` has TODOs at lines 467, 476,
-  483** for utterance-offset mapping. Closing those would unlock the
-  in-process speech path, which is a bigger latency win than any of the
-  perf patches on this branch. Upstream work.
-- **Cancel-revert UX** for the speech grid only handles the synthesizer
-  runtime override. The voice-family / language / rate / pitch /
-  volume sliders set runtime values via `set_runtime_value` and don't
-  get reverted either; they'll leak past Cancel until Orca restarts.
-  Same fix pattern as `revert_changes` in `VoicesPreferencesGrid`.
+  483** for utterance-offset mapping — *intentionally not attempted.*
+  The author uses Voxin as the primary TTS and Spiel has no Voxin
+  provider, so completing the migration would force a fallback to
+  espeak-ng. Revisit when (if) a Spiel-Voxin provider ships.
 
-## Next-on-deck (after the round-3 commits above)
+## Next-on-deck (after the round-7 commits above)
 
-Most of the original "next-on-deck" list was knocked out in rounds
-2 and 3. What remains:
+The personal-perf-branch work has reached a plateau. Remaining items
+are either:
 
 - **True incremental Web Navigation Index.** The round-3
   background-rebuild patch (`740d84192`) gets us most of the way
@@ -264,20 +318,39 @@ Most of the original "next-on-deck" list was knocked out in rounds
   the cached list on `children-changed:add`/`:remove` instead of
   re-walking. Multi-day; harder than expected because new matches
   must be inserted in document order (requires path comparisons
-  during insert).
+  during insert). **Intentionally deferred:** the round-3
+  background-rebuild already extracts the perceived-speed benefit;
+  going to true incremental is a CPU-bandwidth win during idle, not
+  a user-latency win, and the sort-order correctness risk is real.
 - **Caret-order pre-computation** for arrow-key navigation through
-  text (WEB analysis #2). Same general idea but for caret nav.
-- **Fake role / synthetic role cleanup** in `speech_generator.py:1789`
-  ("this function really needs to die"). Pre-AT-SPI-2.0 legacy.
-- **Deprecate Pidgin/Smuxi scripts.** Both apps effectively dead.
+  text (WEB analysis #2). **Intentionally deferred:** critical
+  user-path; risk of regression outweighs the marginal gain.
+- **Fake role / synthetic role cleanup** — *done in `5e463573d`*.
+- **Pidgin/Smuxi scripts** — keeping per user preference.
 
-Strategic / not recommended for the author:
+Architectural cleanup (not bugs; long-term hygiene):
+- Developer-facing caching architecture doc explaining how
+  `event_scope`, the `LONG_LIVED_*` caches in `AXObject`, and the
+  structural-nav match cache interact.
+- Shared `DebouncedCallable` helper to consolidate the three
+  ad-hoc debounce patterns (structural-nav, mouse_review,
+  flat-review).
+- `Telemetry` D-Bus interface exposing perf counters (cache hit
+  rate, event queue depth, speak latency percentiles) so external
+  tools can diagnose without `--debug-file`.
+- Keybinding tuple → dataclass refactor (the cleanup item flagged
+  in the original holistic review).
+- "Stress mode" diagnostic flag for synthetic event-queue saturation,
+  forced speechd disconnects, forced hung-process scenarios.
+
+Strategic / not recommended:
 - **Full Spiel migration** — would give 20-30% speech-latency
   reduction by eliminating speech-dispatcher, but Spiel has no Voxin
   provider, so the author would lose Voxin. Revisit when (if) one
   ships, or build a Spiel-Piper provider as a side project.
 - **AT-SPI batch query API** (`get_attributes_batch` proposed to
-  upstream Atspi). Multi-quarter upstream effort.
+  upstream Atspi). Multi-quarter upstream effort with single-digit
+  realistic gain after Orca's already-aggressive client-side caching.
 
 ## License and upstream
 
