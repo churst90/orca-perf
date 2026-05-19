@@ -433,6 +433,13 @@ class MouseReviewer(Extension):
         self._event_listener: Atspi.EventListener = Atspi.EventListener.new(self._listener)
         self.in_mouse_event: bool = False
         self._event_queue: deque = deque()
+        # Single pending GLib timeout source for coalescing bursts of mouse
+        # events. Without this the listener scheduled a new timer per
+        # event; rapid mouse movement could leave hundreds of timer
+        # sources pending in the main loop. The processor logic already
+        # discards events when more remain queued, so we just need to
+        # make sure exactly one timer is armed at a time.
+        self._pending_timer_id: int = 0
         self._mouse_review_capable: bool = False
         self._use_atspi: bool = False
 
@@ -823,13 +830,14 @@ class MouseReviewer(Extension):
         if new.present(self._current_mouse_over):
             self._current_mouse_over = new
 
-    def _process_event_deprecated(self) -> None:
+    def _process_event_deprecated(self) -> bool:
+        self._pending_timer_id = 0
         if not self._event_queue:
-            return
+            return False
 
         event = self._event_queue.popleft()
         if len(self._event_queue):
-            return
+            return False
 
         start_time = time.time()
         tokens = ["\nvvvvv PROCESS OBJECT EVENT", event.type, "vvvvv"]
@@ -842,21 +850,23 @@ class MouseReviewer(Extension):
         msg = f"TOTAL PROCESSING TIME: {time.time() - start_time:.4f}\n"
         msg += f"^^^^^ PROCESS OBJECT EVENT {event.type} ^^^^^\n"
         debug.print_message(debug.LEVEL_INFO, msg, False)
+        return False
 
     def _listener(self, event) -> None:
         """Generic listener for events of interest."""
 
         if event.type.startswith("mouse:abs"):
             self._event_queue.append(event)
-            GLib.timeout_add(50, self._process_event_deprecated)
+            self._arm_timer(self._process_event_deprecated)
 
-    def _process_event(self) -> None:
+    def _process_event(self) -> bool:
+        self._pending_timer_id = 0
         if not self._event_queue:
-            return
+            return False
 
         [obj, x, y] = self._event_queue.popleft()
         if len(self._event_queue):
-            return
+            return False
 
         start_time = time.time()
         tokens = ["\nvvvvv PROCESS POINTER-MOVED EVENT", "vvvvv"]
@@ -869,12 +879,20 @@ class MouseReviewer(Extension):
         msg = f"TOTAL PROCESSING TIME: {time.time() - start_time:.4f}\n"
         msg += "^^^^^ PROCESS POINTER-MOVED EVENT ^^^^^\n"
         debug.print_message(debug.LEVEL_INFO, msg, False)
+        return False
 
     def _on_pointer_moved(self, _device, obj, x, y) -> None:
         """Listener for pointer-moved events from devices."""
 
         self._event_queue.append([obj, x, y])
-        GLib.timeout_add(50, self._process_event)
+        self._arm_timer(self._process_event)
+
+    def _arm_timer(self, callback) -> None:
+        """Schedules callback in 50ms if no timer is already pending."""
+
+        if self._pending_timer_id:
+            return
+        self._pending_timer_id = GLib.timeout_add(50, callback)
 
 
 _reviewer = MouseReviewer()
