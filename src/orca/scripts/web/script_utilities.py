@@ -104,7 +104,7 @@ class Utilities(script_utilities.Utilities):
         self._cached_word_contents: list[tuple[Atspi.Accessible, int, int, str]] | None = None
         self._cached_character_contents: list[tuple[Atspi.Accessible, int, int, str]] | None = None
         self._cached_find_container: Atspi.Accessible | None = None
-        # Caret-order pre-computation cache (perf branch, step 1: skeleton only).
+        # Caret-order pre-computation cache (perf branch).
         # Keyed by hash(AXObject.get_parent(document)), matching _cached_caret_contexts.
         # Value: ordered list of caret-bearing leaf objects in document order.
         self._caret_order: dict[int, list[Atspi.Accessible]] = {}
@@ -113,6 +113,13 @@ class Utilities(script_utilities.Utilities):
         # Monotonic generation bumped on any invalidation; lets consumers
         # detect snapshot staleness across a single navigation step.
         self._caret_order_generation: int = 0
+        # Env-var probes sampled once at construction. Restart Orca to flip.
+        # ORCA_CARET_ORDER=0 disables the cache entirely (build + consume).
+        # ORCA_CARET_ORDER_VERIFY=1 runs both cache and slow path on every
+        # boundary crossing and logs mismatches; the slow path's answer
+        # is always the one returned to the caller.
+        self._caret_order_disabled: bool = os.environ.get("ORCA_CARET_ORDER") == "0"
+        self._caret_order_verify: bool = os.environ.get("ORCA_CARET_ORDER_VERIFY") == "1"
         self._valid_child_roles: dict[Atspi.Role, list[Atspi.Role]] = {
             Atspi.Role.LIST: [Atspi.Role.LIST_ITEM],
         }
@@ -257,6 +264,40 @@ class Utilities(script_utilities.Utilities):
     # the slow path still produces correct results for unindexed regions.
     _CARET_ORDER_BUILD_CAP = 5000
 
+    def _caret_order_neighbor(
+        self,
+        obj: Atspi.Accessible,
+        direction: int,
+    ) -> Atspi.Accessible | None:
+        """Returns the next/previous caret-bearing leaf for ``obj``.
+
+        ``direction`` is +1 for next, -1 for previous. Returns None on
+        any miss: cache disabled, no snapshot for the active document,
+        ``obj`` not indexed, neighbor out of range, generation changed
+        during lookup, or neighbor is defunct. Callers fall back to the
+        tree-climb path on None — never trust a partial answer.
+        """
+
+        if self._caret_order_disabled:
+            return None
+        ordered, idx_map, gen_before = self.get_caret_order_snapshot()
+        if not ordered or not idx_map:
+            return None
+        pos = idx_map.get(hash(obj))
+        if pos is None:
+            return None
+        neighbor_pos = pos + direction
+        if neighbor_pos < 0 or neighbor_pos >= len(ordered):
+            return None
+        neighbor = ordered[neighbor_pos]
+        # Re-check generation: any AT-SPI call between the lookups above
+        # could have fired an event that invalidated the snapshot.
+        if gen_before != self._caret_order_generation:
+            return None
+        if not AXObject.is_valid(neighbor) or AXObject.is_dead(neighbor):
+            return None
+        return neighbor
+
     def prewarm_caret_order(self) -> None:
         """Builds the caret-order cache for the active document.
 
@@ -269,7 +310,7 @@ class Utilities(script_utilities.Utilities):
         fresh write to a previously-empty cache is not an invalidation.
         """
 
-        if os.environ.get("ORCA_CARET_ORDER") == "0":
+        if self._caret_order_disabled:
             return
 
         document = self.active_document()
@@ -3510,6 +3551,40 @@ class Utilities(script_utilities.Utilities):
         if self.is_top_level_document(obj):
             return None, -1
 
+        # Caret-order shortcut: if obj is an indexed leaf, jump straight
+        # to the next leaf in document order rather than climbing the
+        # AT-SPI tree. Miss / invalidation / verify-mode all fall through.
+        shortcut = self._caret_order_neighbor(obj, +1)
+        if shortcut is not None and not self._caret_order_verify:
+            return self._find_next_caret_in_order_internal(shortcut, -1)
+
+        slow_obj, slow_offset = self._climb_next_caret(obj)
+        if shortcut is not None and self._caret_order_verify:
+            fast_obj, fast_offset = self._find_next_caret_in_order_internal(shortcut, -1)
+            if (fast_obj, fast_offset) != (slow_obj, slow_offset):
+                tokens = [
+                    "WEB: caret-order VERIFY mismatch from",
+                    obj,
+                    "fast=",
+                    fast_obj,
+                    fast_offset,
+                    "slow=",
+                    slow_obj,
+                    slow_offset,
+                ]
+                debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+        return slow_obj, slow_offset
+
+    def _climb_next_caret(
+        self,
+        obj: Atspi.Accessible,
+    ) -> tuple[Atspi.Accessible | None, int]:
+        """Slow-path tree climb for find_next_caret_in_order.
+
+        Extracted unchanged so the caret-order shortcut can defer to it
+        on cache miss and so verify mode can run both paths in parallel.
+        """
+
         while obj and (parent := AXObject.get_parent(obj)):
             if not AXObject.is_valid(parent):
                 msg = "WEB: Finding next caret in order. Parent is not valid."
@@ -3597,6 +3672,39 @@ class Utilities(script_utilities.Utilities):
         # If we're here, start looking up the tree, up to the document.
         if self.is_top_level_document(obj):
             return None, -1
+
+        # Caret-order shortcut: if obj is an indexed leaf, jump straight
+        # to the previous leaf in document order rather than climbing.
+        shortcut = self._caret_order_neighbor(obj, -1)
+        if shortcut is not None and not self._caret_order_verify:
+            return self._find_previous_caret_in_order_internal(shortcut, -1)
+
+        slow_obj, slow_offset = self._climb_previous_caret(obj)
+        if shortcut is not None and self._caret_order_verify:
+            fast_obj, fast_offset = self._find_previous_caret_in_order_internal(shortcut, -1)
+            if (fast_obj, fast_offset) != (slow_obj, slow_offset):
+                tokens = [
+                    "WEB: caret-order VERIFY mismatch from",
+                    obj,
+                    "fast=",
+                    fast_obj,
+                    fast_offset,
+                    "slow=",
+                    slow_obj,
+                    slow_offset,
+                ]
+                debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+        return slow_obj, slow_offset
+
+    def _climb_previous_caret(
+        self,
+        obj: Atspi.Accessible,
+    ) -> tuple[Atspi.Accessible | None, int]:
+        """Slow-path tree climb for find_previous_caret_in_order.
+
+        Extracted unchanged so the caret-order shortcut can defer to it
+        on cache miss and so verify mode can run both paths in parallel.
+        """
 
         while obj and (parent := AXObject.get_parent(obj)):
             if not AXObject.is_valid(parent):
