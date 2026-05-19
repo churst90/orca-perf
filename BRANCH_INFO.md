@@ -181,8 +181,46 @@ will use. Five items, all additive or behavior-preserving:
   default. Lets us regression-test concurrency / recovery work
   without waiting for real-world conditions.
 
-Phase 2 (structural-nav 23-element-type registry) is the next move
-once Phase 1 has been validated in daily use.
+**Phase 2 structural-nav registry + dispatcher (commits `991a25158`
+through `019db4cd7`)**
+
+Collapses the 23 hand-written element-type quadruples in
+`structural_navigator.py` (`_get_all_X` / `previous_X` / `next_X` /
+`list_X`, plus six heading-level variants of the trio) into a
+data-driven registry plus a single generic dispatcher. Three commits,
+all behavior-preserving:
+
+- `991a25158` — `ElementType` + `ElementRegistry` skeleton. Frozen
+  dataclass captures the matcher, the "no more" message, and the
+  list-dialog metadata; registry holds the ordered table. No
+  consumers yet. 15 unit tests for shape, validation, and singleton
+  identity.
+- `31f380911` — register all 29 builtins (24 base types +
+  heading-level 1..6), wire `StructuralNavigator.__init__` to call
+  `register_builtins(self)`. Heading-level variants share the
+  "headings" cache slot via `cache_key` and lazy-format their
+  per-level templates via `format_arg`. List row builders gain a
+  leading `script` parameter so the dispatcher can pass it at
+  invocation time without racy `last_script` capture. Also fixes
+  meson wiring that step 1 forgot. 5 new tests; 113 total green.
+- `019db4cd7` — generic dispatcher. Three helpers
+  (`_dispatch_previous`, `_dispatch_next`, `_dispatch_list`) handle
+  the boilerplate that every per-type method repeated verbatim. All
+  85 `previous_X` / `next_X` / `list_X` bodies became one-line calls
+  into the dispatcher. The `@dbus_service.command` decorator stays
+  on every wrapper so the D-Bus surface and `command_manager`
+  lookups are byte-identical. Landmark's `_present_landmark`
+  specialization is hardcoded inside `_dispatch_directional` with a
+  comment explaining why it's not another field on `ElementType`
+  (one record would set it). Net diff: `structural_navigator.py`
+  4378 → 3024 lines (-1354 / ~32%).
+
+Pure refactor — zero runtime delta on its own. The win is structural:
+adding a new element type now costs one `ElementType` record instead
+of four ~50-line methods, and the registry is the natural foundation
+for a future single-walk multi-type classifier (one tree traversal
+classifies every node against every matcher in registration order)
+if that ever becomes the bottleneck.
 
 **Speech-prefs correctness (commit `e05d8868d`)**
 
@@ -364,19 +402,19 @@ are either:
 - **Pidgin/Smuxi scripts** — keeping per user preference.
 
 Architectural cleanup (not bugs; long-term hygiene):
-- Developer-facing caching architecture doc explaining how
-  `event_scope`, the `LONG_LIVED_*` caches in `AXObject`, and the
-  structural-nav match cache interact.
-- Shared `DebouncedCallable` helper to consolidate the three
-  ad-hoc debounce patterns (structural-nav, mouse_review,
-  flat-review).
-- `Telemetry` D-Bus interface exposing perf counters (cache hit
-  rate, event queue depth, speak latency percentiles) so external
-  tools can diagnose without `--debug-file`.
+- ~~Developer-facing caching architecture doc~~ — done in `0df794228`
+  (`docs/caching.md`).
+- ~~Shared `DebouncedCallable` helper~~ — done in `62bbcc6b2`;
+  four ad-hoc debounce patterns migrated in `971951e54`.
+- ~~`Telemetry` D-Bus interface~~ — done in `9194c07c0` /
+  `5e58eeb8f`.
+- ~~Structural-nav 23-element-type registry + dispatcher~~ — done
+  in Phase 2 (`991a25158` → `019db4cd7`).
 - Keybinding tuple → dataclass refactor (the cleanup item flagged
-  in the original holistic review).
-- "Stress mode" diagnostic flag for synthetic event-queue saturation,
-  forced speechd disconnects, forced hung-process scenarios.
+  in the original holistic review). Still open. Lower priority now
+  that Phase 2 proved the dataclass-table-driven pattern works
+  cleanly.
+- ~~"Stress mode" diagnostic flag~~ — done in `45d90d2d6`.
 
 Strategic / not recommended:
 - **Full Spiel migration** — would give 20-30% speech-latency
