@@ -149,6 +149,41 @@ Two items from the round-7 plan were intentionally deferred:
 Both are documented in the commit log; revisit if either becomes
 a measured user pain point.
 
+**Phase 1 architectural foundation (commits `62bbcc6b2` through
+`45d90d2d6`)**
+
+Per the comprehensive plan in this file (see "Architectural cleanup"
+section below): build the shared infrastructure that later phases
+will use. Five items, all additive or behavior-preserving:
+
+- `62bbcc6b2` — `orca.util.debounce.DebouncedCallable`. Single helper
+  consolidates the hand-rolled single-pending-timer pattern used by
+  structural_navigator, mouse_review, flat_review_presenter, and
+  speechdispatcherfactory. 8 unit tests; ~60 lines of duplicated
+  timer-bookkeeping deleted.
+- `0df794228` — `docs/caching.md`. Authoritative explanation of the
+  five cache layers (event-scope, long-lived AT-SPI, state-change
+  baselines, descendant-of, structural-nav matches) with
+  invalidation rules and the file reference table. Reader can
+  answer "which cache do I invalidate?" without reading
+  ax_object.py end-to-end.
+- `9194c07c0` — `orca.telemetry` D-Bus interface. Read-only counters
+  published under `org.gnome.Orca1.Telemetry`: cache hit rate,
+  event queue depth, hung/dead object counts, LL cache size, nav
+  cache stats, speechd/braille connection status. Diagnoseable
+  from `gdbus call` without `--debug-file`. `ax_object.py` gained
+  `LIFETIME_CACHE_HITS / LL_CACHE_HITS / CACHE_MISSES` class
+  counters fed unconditionally by the existing `_record_*` helpers.
+- `45d90d2d6` — `orca.stress_mode`. `ORCA_STRESS=1` env-gated
+  harness with five stressors (hung-object, speechd reset, brlapi
+  reset, navcache invalidation, placeholder event-flood) that
+  exercise the robustness paths we built in rounds 4-7. Off by
+  default. Lets us regression-test concurrency / recovery work
+  without waiting for real-world conditions.
+
+Phase 2 (structural-nav 23-element-type registry) is the next move
+once Phase 1 has been validated in daily use.
+
 **Speech-prefs correctness (commit `e05d8868d`)**
 
 Fixes a regression in the GSettings-based prefs system where changing
