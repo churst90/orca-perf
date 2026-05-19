@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from typing import TYPE_CHECKING
 
 import gi
@@ -64,11 +65,16 @@ class NotificationPresenter(Extension):
         self._gui: NotificationListGUI | None = None
         self._max_size: int = 55
 
-        # The list is arranged with the most recent message being at the end of
-        # the list. The current index is relative to, and used directly, with the
-        # python list, i.e. self._notifications[-3] would return the third-to-last
-        # notification message.
-        self._notifications: list[tuple[str, float]] = []
+        # The deque is arranged with the most recent message being at the end.
+        # _current_index is interpreted the same as it would be for a list:
+        # -1 means "not yet navigated, points implicitly to newest"; a
+        # non-negative integer is an absolute position from the start.
+        # Using deque(maxlen=...) gives O(1) append + automatic truncation;
+        # the manual slice-and-rebuild the previous list version did was
+        # O(n) per append and didn't adjust _current_index when truncating
+        # mid-browse (the user's pointer would silently shift to a
+        # different message).
+        self._notifications: deque[tuple[str, float]] = deque(maxlen=self._max_size)
         self._current_index: int = -1
         super().__init__()
 
@@ -105,8 +111,17 @@ class NotificationPresenter(Extension):
 
         tokens = ["NOTIFICATION PRESENTER: Adding '", message, "'."]
         debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-        to_remove = max(len(self._notifications) - self._max_size + 1, 0)
-        self._notifications = self._notifications[to_remove:]
+        # When the deque is full, append() pops the oldest entry. Shift
+        # _current_index left by one so a mid-browse user's pointer still
+        # references the same logical message. Clamp at 0 -- if the
+        # message they were browsing was the one we just dropped, they
+        # land on the new oldest.
+        if (
+            self._current_index > 0
+            and self._notifications.maxlen is not None
+            and len(self._notifications) == self._notifications.maxlen
+        ):
+            self._current_index -= 1
         self._notifications.append((message, time.time()))
 
     def clear_list(self) -> None:
@@ -114,7 +129,7 @@ class NotificationPresenter(Extension):
 
         msg = "NOTIFICATION PRESENTER: Clearing list."
         debug.print_message(debug.LEVEL_INFO, msg, True)
-        self._notifications = []
+        self._notifications.clear()
         self._current_index = -1
 
     def _timestamp_to_string(self, timestamp: float) -> str:
@@ -196,17 +211,14 @@ class NotificationPresenter(Extension):
         # This is the first (oldest) message in the list.
         if self._current_index == 0:
             presentation_manager.get_manager().present_message(messages.NOTIFICATION_LIST_TOP)
-            message, timestamp = self._notifications[self._current_index]
+            message, timestamp = self._notifications[0]
         else:
-            try:
-                index = self._current_index - 1
-                message, timestamp = self._notifications[index]
-                self._current_index -= 1
-            except IndexError:
-                msg = "NOTIFICATION PRESENTER: Handling IndexError exception."
-                debug.print_message(debug.LEVEL_INFO, msg, True)
-                presentation_manager.get_manager().present_message(messages.NOTIFICATION_LIST_TOP)
-                message, timestamp = self._notifications[self._current_index]
+            # save_notification() keeps _current_index in [-1, len-1],
+            # so index - 1 is in range and the defensive IndexError
+            # handler that lived here is no longer needed.
+            index = self._current_index - 1
+            message, timestamp = self._notifications[index]
+            self._current_index = index
 
         string = f"{message} {self._timestamp_to_string(timestamp)}"
         presentation_manager.get_manager().present_message(string)
@@ -240,22 +252,19 @@ class NotificationPresenter(Extension):
                 )
             return True
 
-        # This is the last (newest) message in the list.
-        if self._current_index == -1:
+        # _current_index == -1 means "not yet navigated"; the newest is
+        # at index -1 too. Past the end of the list means we wrap to
+        # bottom and stay there. The previous IndexError handler covered
+        # the wrap case, but _current_index is bounded by save_notification
+        # so the only path to the bottom is hitting len-1 explicitly.
+        if self._current_index == -1 or self._current_index >= len(self._notifications) - 1:
             presentation_manager.get_manager().present_message(messages.NOTIFICATION_LIST_BOTTOM)
-            message, timestamp = self._notifications[self._current_index]
+            message, timestamp = self._notifications[-1]
+            self._current_index = len(self._notifications) - 1
         else:
-            try:
-                index = self._current_index + 1
-                message, timestamp = self._notifications[index]
-                self._current_index += 1
-            except IndexError:
-                msg = "NOTIFICATION PRESENTER: Handling IndexError exception."
-                debug.print_message(debug.LEVEL_INFO, msg, True)
-                presentation_manager.get_manager().present_message(
-                    messages.NOTIFICATION_LIST_BOTTOM,
-                )
-                message, timestamp = self._notifications[self._current_index]
+            index = self._current_index + 1
+            message, timestamp = self._notifications[index]
+            self._current_index = index
 
         string = f"{message} {self._timestamp_to_string(timestamp)}"
         presentation_manager.get_manager().present_message(string)
