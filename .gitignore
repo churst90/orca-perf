@@ -7,11 +7,6 @@ patch.*
 [0-9][0-9][0-9][0-9][-]*
 __pycache__/
 *.pyc
-# generated from *.in by meson configure (or hand-substituted when running
-# the dev tree directly without a meson build)
-src/orca/orca_platform.py
-src/orca/orca_i18n.py
-src/orca/orca_bin.py
 subprojects/*/
 !subprojects/*.wrap
 !subprojects/packagefiles/
