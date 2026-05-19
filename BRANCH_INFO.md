@@ -222,6 +222,78 @@ for a future single-walk multi-type classifier (one tree traversal
 classifies every node against every matcher in registration order)
 if that ever becomes the bottleneck.
 
+**Phase 3 caret-order pre-computation (commits `7ab3fc471` through
+`315bdd9e0`)**
+
+Implements ANALYSIS_WEB.md improvement #2. Boundary crossings in
+`find_next_caret_in_order` / `find_previous_caret_in_order` previously
+required an AT-SPI tree climb (`get_parent` → `get_next_sibling` →
+`get_child`, recursing through containers). For a page with deep DOM
+nesting this is the most expensive part of arrow-key navigation; the
+intra-text-object character scan is cheap by comparison. This phase
+adds a per-document index of caret-bearing leaf objects in document
+order so boundary crossings become O(1).
+
+- `7ab3fc471` — skeleton + invalidation wiring only. Adds
+  `_caret_order` (dict keyed by `hash(AXObject.get_parent(document))`),
+  `_caret_order_index` (per-document reverse `hash(obj) → position`
+  map), and `_caret_order_generation` (monotonic counter bumped on any
+  invalidation). Three operations: `_caret_order_invalidate(document=
+  None)` for full or per-document drops, `get_caret_order_snapshot()`
+  for consumer reads, and the generation counter for stale-snapshot
+  detection. Invalidation hooked into the existing `clear_cached_
+  objects()`, `clear_caret_context(document)`, and `_cleanup_contexts()`
+  paths so the new cache rides on the same lifecycle as the existing
+  `_cached_caret_contexts`. No producer, no consumer — pure storage.
+- `899b2041a` — populator. `prewarm_caret_order()` builds the cache
+  for the active document at `default.Script._prewarm_window_caches()`
+  (called from `activate()`) and at
+  `_on_document_load_complete()` (so in-tab navigation rebuilds without
+  waiting for the next Alt-Tab). `_build_caret_order()` is an iterative
+  DFS pre-order walk recording only objects where
+  `_find_next_caret_in_order` would actually stop (text-bearing,
+  treat-as-whole, or childless caret-bearing). Hard cap of 5000
+  leaves per document so a pathological page can't stall activation;
+  the slow path covers unindexed regions naturally. Base
+  `script_utilities.Utilities` exposes a no-op stub so non-web scripts
+  pay nothing; the activate wrapper swallows `GLib.GError` for the
+  same reason the existing role/name warmup does — pre-warm must
+  never break activate. `ORCA_PERF_LOG=1` prints entry count, cap-hit
+  flag, and build time on every population.
+- `315bdd9e0` — consumer. Factors the existing tree-climb portions of
+  `_find_next_caret_in_order_internal` and
+  `_find_previous_caret_in_order_internal` into `_climb_next_caret` /
+  `_climb_previous_caret` helpers (byte-identical bodies). New
+  `_caret_order_neighbor(obj, direction)` looks up the next/previous
+  leaf in the index and returns None on any failure mode (cache
+  disabled, snapshot empty, obj unindexed, neighbor out of range,
+  generation moved during lookup, neighbor defunct). The main
+  functions consult the shortcut before the slow climb; misses fall
+  through. Env-var probes sampled once at `__init__` to keep the hot
+  path out of `os.environ`.
+
+Kill switch and verify mode:
+- `ORCA_CARET_ORDER=0` disables build and consume. Restart Orca to
+  flip; the env-var probes are sampled at `Utilities.__init__`.
+- `ORCA_CARET_ORDER_VERIFY=1` runs both fast and slow paths on every
+  boundary crossing where the cache had an answer, returns the slow
+  result, and logs any mismatch with the source obj plus both
+  `(obj, offset)` tuples. Used to validate the cache during field
+  testing without exposing the user to silent wrong-position bugs.
+
+Generation re-check after the neighbor lookup is intentional: the
+snapshot triple is captured before `AXObject.is_valid(neighbor)` runs,
+and `is_valid` touches AT-SPI which can dispatch events, which can
+invalidate the cache. Re-reading the generation counter after the
+AT-SPI call lets the consumer reject a stale answer cheaply without
+holding a lock.
+
+Coverage gap: `children-changed:add`/`:remove` and scroll events
+invalidate the cache via the existing hooks but do not auto-rebuild.
+The slow path covers that interval until the next activate or
+document-load-complete event. Adding lazy rebuild on the first
+post-invalidation cache miss is a future refinement.
+
 **Speech-prefs correctness (commit `e05d8868d`)**
 
 Fixes a regression in the GSettings-based prefs system where changing
@@ -395,9 +467,13 @@ are either:
   background-rebuild already extracts the perceived-speed benefit;
   going to true incremental is a CPU-bandwidth win during idle, not
   a user-latency win, and the sort-order correctness risk is real.
-- **Caret-order pre-computation** for arrow-key navigation through
-  text (WEB analysis #2). **Intentionally deferred:** critical
-  user-path; risk of regression outweighs the marginal gain.
+- ~~**Caret-order pre-computation** for arrow-key navigation through
+  text (WEB analysis #2)~~ — *done in Phase 3
+  (`7ab3fc471` → `315bdd9e0`).* Behavior-preserving by construction:
+  fast and slow paths return identical answers on every boundary
+  crossing (verifiable with `ORCA_CARET_ORDER_VERIFY=1`), and the
+  cache is opt-out via `ORCA_CARET_ORDER=0` if a regression slips
+  past verification.
 - **Fake role / synthetic role cleanup** — *done in `5e463573d`*.
 - **Pidgin/Smuxi scripts** — keeping per user preference.
 
