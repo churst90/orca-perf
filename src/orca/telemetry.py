@@ -59,6 +59,7 @@ from typing import Any
 from . import (  # pylint: disable=no-name-in-module
     dbus_service,
 )
+from .dbus_service import UInt32
 from .extension import Extension
 
 
@@ -96,7 +97,7 @@ class Telemetry(Extension):
         return hits / total
 
     @dbus_service.getter
-    def get_cache_hits_total(self) -> dbus_service.UInt32:
+    def get_cache_hits_total(self) -> UInt32:
         """Returns the cumulative event-scope + LL cache hit count since process start."""
 
         from .ax_object import AXObject  # pylint: disable=import-outside-toplevel
@@ -105,14 +106,14 @@ class Telemetry(Extension):
         )
 
     @dbus_service.getter
-    def get_cache_misses_total(self) -> dbus_service.UInt32:
+    def get_cache_misses_total(self) -> UInt32:
         """Returns the cumulative cache miss count (= D-Bus calls) since process start."""
 
         from .ax_object import AXObject  # pylint: disable=import-outside-toplevel
         return dbus_service.UInt32(AXObject.LIFETIME_CACHE_MISSES)
 
     @dbus_service.getter
-    def get_event_queue_depth(self) -> dbus_service.UInt32:
+    def get_event_queue_depth(self) -> UInt32:
         """Returns the current event_manager event queue size."""
 
         from . import event_manager  # pylint: disable=import-outside-toplevel
@@ -122,7 +123,7 @@ class Telemetry(Extension):
             return dbus_service.UInt32(0)
 
     @dbus_service.getter
-    def get_hung_object_count(self) -> dbus_service.UInt32:
+    def get_hung_object_count(self) -> UInt32:
         """Returns the number of accessibles currently marked as hung."""
 
         from .ax_object import AXObject  # pylint: disable=import-outside-toplevel
@@ -130,14 +131,14 @@ class Telemetry(Extension):
             return dbus_service.UInt32(len(AXObject.HUNG_OBJECTS))
 
     @dbus_service.getter
-    def get_known_dead_object_count(self) -> dbus_service.UInt32:
+    def get_known_dead_object_count(self) -> UInt32:
         """Returns the number of accessibles currently marked as known-dead."""
 
         from .ax_object import AXObject  # pylint: disable=import-outside-toplevel
         return dbus_service.UInt32(len(AXObject.KNOWN_DEAD))
 
     @dbus_service.getter
-    def get_long_lived_cache_size(self) -> dbus_service.UInt32:
+    def get_long_lived_cache_size(self) -> UInt32:
         """Returns total entries across LONG_LIVED_ROLES/PARENTS/NAMES/STATES."""
 
         from .ax_object import AXObject  # pylint: disable=import-outside-toplevel
@@ -150,7 +151,7 @@ class Telemetry(Extension):
         return dbus_service.UInt32(size)
 
     @dbus_service.getter
-    def get_nav_cache_size(self) -> dbus_service.UInt32:
+    def get_nav_cache_size(self) -> UInt32:
         """Returns the number of structural-nav match-list cache entries."""
 
         from . import structural_navigator  # pylint: disable=import-outside-toplevel
@@ -161,7 +162,7 @@ class Telemetry(Extension):
             return dbus_service.UInt32(0)
 
     @dbus_service.getter
-    def get_nav_cache_hits(self) -> dbus_service.UInt32:
+    def get_nav_cache_hits(self) -> UInt32:
         """Returns lifetime nav-cache hit count."""
 
         from . import structural_navigator  # pylint: disable=import-outside-toplevel
@@ -172,7 +173,7 @@ class Telemetry(Extension):
             return dbus_service.UInt32(0)
 
     @dbus_service.getter
-    def get_nav_cache_misses(self) -> dbus_service.UInt32:
+    def get_nav_cache_misses(self) -> UInt32:
         """Returns lifetime nav-cache miss count."""
 
         from . import structural_navigator  # pylint: disable=import-outside-toplevel
