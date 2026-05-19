@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import re
 import time
 import urllib
@@ -249,6 +250,111 @@ class Utilities(script_utilities.Utilities):
             self._caret_order_index.get(key),
             self._caret_order_generation,
         )
+
+    # Hard cap on caret-order entries built per document; bounds activate-
+    # time work on huge pages. 5000 caret-bearing leaves covers most real
+    # documents (a typical news article is well under 1000); beyond this,
+    # the slow path still produces correct results for unindexed regions.
+    _CARET_ORDER_BUILD_CAP = 5000
+
+    def prewarm_caret_order(self) -> None:
+        """Builds the caret-order cache for the active document.
+
+        Called from default.Script._prewarm_window_caches at script
+        activate. Builds once per document and skips if already present.
+        Set ORCA_CARET_ORDER=0 to disable population entirely (the
+        consumer step's kill switch — useful for A/B field comparison).
+
+        Population only; does NOT bump the generation counter, since a
+        fresh write to a previously-empty cache is not an invalidation.
+        """
+
+        if os.environ.get("ORCA_CARET_ORDER") == "0":
+            return
+
+        document = self.active_document()
+        if not document or not AXObject.is_valid(document):
+            return
+
+        key = hash(AXObject.get_parent(document))
+        if key in self._caret_order:
+            return
+
+        start_time = time.time()
+        ordered, index, capped = self._build_caret_order(document)
+        self._caret_order[key] = ordered
+        self._caret_order_index[key] = index
+
+        if os.environ.get("ORCA_PERF_LOG") == "1":
+            elapsed = time.time() - start_time
+            msg = (
+                f"WEB: caret-order built — entries={len(ordered)} "
+                f"capped={capped} elapsed={elapsed:.3f}s"
+            )
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+
+    def _build_caret_order(
+        self,
+        document: Atspi.Accessible,
+    ) -> tuple[list[Atspi.Accessible], dict[int, int], bool]:
+        """Depth-first pre-order walk collecting caret-bearing leaves.
+
+        A "leaf" here means an object that ``_find_next_caret_in_order``
+        would actually return: text-bearing, treat-as-whole, or
+        childless. Containers are descended into but not recorded.
+
+        Returns (ordered_list, hash->index map, capped_flag). On cap-hit
+        the partial result is still returned so the consumer step can
+        use it for the prefix; misses past the cap fall through to the
+        slow path naturally.
+        """
+
+        ordered: list[Atspi.Accessible] = []
+        index: dict[int, int] = {}
+        seen: set[int] = set()
+        stack: list[Atspi.Accessible] = [document]
+        capped = False
+        cap = self._CARET_ORDER_BUILD_CAP
+
+        while stack:
+            if len(ordered) >= cap:
+                capped = True
+                break
+
+            obj = stack.pop()
+            h = hash(obj)
+            if h in seen:
+                continue
+            seen.add(h)
+
+            if AXObject.is_dead(obj) or not AXObject.is_valid(obj):
+                continue
+            if not self._can_have_caret_context(obj):
+                # Still descend into containers that themselves are not
+                # caret-bearing but may have caret-bearing descendants
+                # — but only if they are document content. In practice
+                # _can_have_caret_context filters out anonymous wrappers
+                # we never want to record OR descend through, so the
+                # safer choice is to skip them entirely. Step 3 will
+                # treat any miss as a fallback-to-slow-path anyway.
+                continue
+
+            treat_whole = self._treat_object_as_whole(obj, -1)
+            child_count = 0 if treat_whole else AXObject.get_child_count(obj)
+            is_text = self.treat_as_text_object(obj)
+
+            if is_text or treat_whole or child_count == 0:
+                index[h] = len(ordered)
+                ordered.append(obj)
+                continue
+
+            # Container: push children reversed so they pop in document order.
+            for i in range(child_count - 1, -1, -1):
+                child = AXObject.get_child(obj, i)
+                if child is not None:
+                    stack.append(child)
+
+        return ordered, index, capped
 
     def is_document(self, obj: Atspi.Accessible, exclude_document_frame: bool = True) -> bool:
         """Returns True if obj is a document."""

@@ -504,6 +504,14 @@ class Script(script.Script):
         except GLib.GError:
             pass
 
+        # Subclass hook: web Utilities builds its caret-order index here.
+        # Base no-op so non-web scripts pay nothing. Errors are swallowed
+        # for the same reason as the loop above — activate must succeed.
+        try:
+            self.utilities.prewarm_caret_order()
+        except (GLib.GError, AttributeError):
+            pass
+
     def deactivate(self) -> None:
         """Called when this script is deactivated."""
 

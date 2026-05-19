@@ -201,6 +201,17 @@ class Utilities:
         obj = obj or focus_manager.get_manager().get_locus_of_focus()
         return self.get_document_for_object(obj) is not None
 
+    def prewarm_caret_order(self) -> None:
+        """Subclass hook to pre-compute caret-bearing object order.
+
+        Base implementation is a no-op; the web Utilities override builds
+        an ordered list of caret-bearing leaf objects so boundary
+        crossings in find_next_caret_in_order can be O(1) lookups
+        instead of an AT-SPI tree climb.
+        """
+
+        return None
+
     def active_document(self) -> Atspi.Accessible | None:
         """Returns the active document."""
 

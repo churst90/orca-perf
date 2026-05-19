@@ -1138,6 +1138,11 @@ class Script(default.Script):
         debug.print_message(debug.LEVEL_INFO, msg, True)
         self._loading_content = False
         live_region_presenter.get_presenter().reset()
+
+        # Page just finished loading; the earlier clear_all_cache_now wiped
+        # our caret-order snapshot. Rebuild now so the very first arrow-key
+        # press after load doesn't pay full discovery cost on the slow path.
+        self.utilities.prewarm_caret_order()
         return True
 
     def _on_document_load_stopped(self, event: Atspi.Event) -> bool:
