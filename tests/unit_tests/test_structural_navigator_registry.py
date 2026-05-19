@@ -34,7 +34,7 @@ def _matcher(_script):
     return []
 
 
-def _row(_obj):
+def _row(_script, _obj):
     return []
 
 
@@ -176,3 +176,35 @@ class TestRegistrySingleton:
         # so the singleton is fresh per test.
         from orca.structural_navigator_registry import get_registry
         assert len(get_registry()) == 0
+
+
+@pytest.mark.unit
+class TestFormatArg:
+    """Test the lazy-format resolve_* helpers."""
+
+    def test_resolve_no_more_message_without_arg(self) -> None:
+        et = _make_type("buttons", no_more_message="no more buttons")
+        assert et.resolve_no_more_message() == "no more buttons"
+
+    def test_resolve_no_more_message_with_arg(self) -> None:
+        et = _make_type(
+            "heading_level_3",
+            no_more_message="no more headings at level %d",
+            format_arg=3,
+        )
+        assert et.resolve_no_more_message() == "no more headings at level 3"
+
+    def test_resolve_list_dialog_title_without_arg(self) -> None:
+        et = _make_type(
+            "buttons",
+            list_dialog_title="Buttons",
+        )
+        assert et.resolve_list_dialog_title() == "Buttons"
+
+    def test_resolve_list_dialog_title_with_arg(self) -> None:
+        et = _make_type(
+            "heading_level_3",
+            list_dialog_title="Headings at level %d",
+            format_arg=3,
+        )
+        assert et.resolve_list_dialog_title() == "Headings at level 3"

@@ -166,6 +166,15 @@ class StructuralNavigator(Extension):
 
         super().__init__()
 
+        # Populate the ElementType registry (Phase 2 step 3).
+        # Imported locally to break the circular import: this module
+        # is imported transitively from structural_navigator_builtins
+        # via NavigationMode.
+        from .structural_navigator_builtins import (  # pylint: disable=import-outside-toplevel
+            register_builtins,
+        )
+        register_builtins(self)
+
     def _cached_or_compute(
         self,
         root: Atspi.Accessible,

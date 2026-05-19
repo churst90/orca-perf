@@ -154,6 +154,8 @@ lib_sources = [
   'ssml.py',
   'stress_mode.py',
   'structural_navigator.py',
+  'structural_navigator_builtins.py',
+  'structural_navigator_registry.py',
   'systemd.py',
   'system_information_presenter.py',
   'table_navigator.py',

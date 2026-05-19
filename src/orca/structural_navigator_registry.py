@@ -77,9 +77,30 @@ class ElementType:
     no_more_message: str
     list_dialog_title: str = ""
     list_dialog_headers: tuple[str, ...] = ()
-    list_row_builder: Callable[[Atspi.Accessible], list[str]] | None = None
+    list_row_builder: Callable[[default.Script, Atspi.Accessible], list[str]] | None = None
     cache_key: str = ""
     cache_invalidation_roles: frozenset[str] = field(default_factory=frozenset)
+    # If set, the dispatcher will format ``no_more_message`` and
+    # ``list_dialog_title`` as ``template % format_arg`` at presentation
+    # time. Keeping the templates unformatted at registration time means
+    # the dataclass holds the gettext-friendly form, and means
+    # ``register_builtins`` does not need to evaluate ``%`` against
+    # constants -- useful for tests that mock the messages module.
+    format_arg: int | None = None
+
+    def resolve_no_more_message(self) -> str:
+        """Returns ``no_more_message`` with ``format_arg`` substituted if set."""
+
+        if self.format_arg is None:
+            return self.no_more_message
+        return self.no_more_message % self.format_arg
+
+    def resolve_list_dialog_title(self) -> str:
+        """Returns ``list_dialog_title`` with ``format_arg`` substituted if set."""
+
+        if self.format_arg is None:
+            return self.list_dialog_title
+        return self.list_dialog_title % self.format_arg
 
     def __post_init__(self) -> None:
         if not self.name:

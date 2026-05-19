@@ -235,6 +235,20 @@ class TestStructuralNavigator:
         assert cmd_manager.get_command("previous_button") is not None
         assert cmd_manager.get_command("next_button") is not None
 
+    def test_init_populates_element_registry(self, test_context: OrcaTestContext) -> None:
+        """StructuralNavigator.__init__ must register all 29 builtin element types."""
+
+        self._setup_dependencies(test_context)
+        from orca.structural_navigator import get_navigator
+        from orca.structural_navigator_builtins import BUILTIN_ELEMENT_TYPE_NAMES
+        from orca.structural_navigator_registry import get_registry
+
+        get_navigator()
+        registry = get_registry()
+        assert len(registry) == len(BUILTIN_ELEMENT_TYPE_NAMES)
+        for name in BUILTIN_ELEMENT_TYPE_NAMES:
+            assert name in registry, f"missing element type: {name}"
+
     def test_commands_registered(self, test_context: OrcaTestContext) -> None:
         """Test StructuralNavigator.setup registers commands with CommandManager."""
 
