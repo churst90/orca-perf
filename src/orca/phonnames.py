@@ -43,7 +43,7 @@ from .orca_i18n import _  # pylint: disable=import-error
 # interesting tidbits about local conventions in the sections
 # "Additions in German, Danish and Norwegian" and "Variants".
 #
-__phonlist = _(
+__english_phonlist = (
     "a : alpha, b : bravo, c : charlie, "
     "d : delta, e : echo, f : foxtrot, "
     "g : golf, h : hotel, i : india, "
@@ -52,14 +52,37 @@ __phonlist = _(
     "p : papa, q : quebec, r : romeo, "
     "s : sierra, t : tango, u : uniform, "
     "v : victor, w : whiskey, x : xray, "
-    "y : yankee, z : zulu",
+    "y : yankee, z : zulu"
 )
 
-__phonnames = {}
+__phonlist = _(__english_phonlist)
 
-for __pair in __phonlist.split(","):
-    __w = __pair.split(":")
-    __phonnames[__w[0].strip()] = __w[1].strip()
+
+def __parse_phonlist(phonlist):
+    """Build a {letter: phonetic} dict from a comma-separated 'l : word' string.
+
+    Returns the dict or None if any pair is malformed.
+    """
+
+    parsed = {}
+    for pair in phonlist.split(","):
+        parts = pair.split(":")
+        if len(parts) != 2:
+            return None
+        letter = parts[0].strip()
+        word = parts[1].strip()
+        if not letter or not word:
+            return None
+        parsed[letter] = word
+    return parsed
+
+
+__phonnames = __parse_phonlist(__phonlist)
+if __phonnames is None:
+    # Translator produced a malformed table; fall back to the English
+    # NATO alphabet so get_phonetic_name() still works rather than
+    # taking the whole module (and Orca startup) down with it.
+    __phonnames = __parse_phonlist(__english_phonlist) or {}
 
 
 def get_phonetic_name(character):
