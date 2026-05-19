@@ -93,11 +93,31 @@ class FocusManager:
         self._old_focus_was_dead = False
 
     def is_in_preferences_window(self) -> bool:
-        """Returns True if the Orca preferences window is the active window."""
+        """Returns True if the user is in any Orca-owned preferences window.
+
+        The earlier implementation only matched the prefs root window
+        exactly. That returned False for descendant dialogs (Voice
+        Defaults, Global Voice Settings, etc.) -- which is how the
+        speech-prefs synth-revert family of bugs slipped past the
+        guard: Script.activate() runs on focus moves *into* those
+        dialogs, sees False, and clobbers pending changes by reading
+        dconf.
+
+        Treat any window belonging to the same application as the
+        prefs root as "in preferences" too. Orca's preferences UI
+        runs in Orca's own application process, so a same-app match
+        is a reliable signal that we are still in the prefs hierarchy.
+        """
 
         if self._preferences_window is None:
             return False
-        return self._window == self._preferences_window
+        if self._window == self._preferences_window:
+            return True
+        if self._window is None:
+            return False
+        prefs_app = AXUtilities.get_application(self._preferences_window)
+        window_app = AXUtilities.get_application(self._window)
+        return prefs_app is not None and prefs_app == window_app
 
     def set_in_preferences_window(self, in_prefs: bool) -> None:
         """Tracks the Orca preferences window accessible for active-window comparison."""
