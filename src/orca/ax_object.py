@@ -130,6 +130,14 @@ class AXObject:
     _event_cache_tls = threading.local()
     _perf_stats_tls = threading.local()
 
+    # Class-level lifetime counters consumed by orca.telemetry. Always
+    # incremented (no env-var gate) so the D-Bus telemetry interface
+    # returns meaningful values even without ORCA_PERF_LOG=1. The cost
+    # of the increments is in the noise floor of a cache hit.
+    LIFETIME_CACHE_HITS: ClassVar[int] = 0
+    LIFETIME_LL_CACHE_HITS: ClassVar[int] = 0
+    LIFETIME_CACHE_MISSES: ClassVar[int] = 0
+
     @staticmethod
     @contextmanager
     def event_scope(label: str = "") -> Generator[None, None, None]:
@@ -181,6 +189,7 @@ class AXObject:
 
     @staticmethod
     def _record_cache_hit() -> None:
+        AXObject.LIFETIME_CACHE_HITS += 1
         if _PERF_LOG_ENABLED:
             stats = getattr(AXObject._perf_stats_tls, "stats", None)
             if stats is not None:
@@ -188,6 +197,7 @@ class AXObject:
 
     @staticmethod
     def _record_ll_hit() -> None:
+        AXObject.LIFETIME_LL_CACHE_HITS += 1
         if _PERF_LOG_ENABLED:
             stats = getattr(AXObject._perf_stats_tls, "stats", None)
             if stats is not None:
@@ -195,6 +205,7 @@ class AXObject:
 
     @staticmethod
     def _record_cache_miss() -> None:
+        AXObject.LIFETIME_CACHE_MISSES += 1
         if _PERF_LOG_ENABLED:
             stats = getattr(AXObject._perf_stats_tls, "stats", None)
             if stats is not None:

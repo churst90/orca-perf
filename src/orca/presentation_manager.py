@@ -40,8 +40,13 @@ from . import (
     speech_manager,
     speech_presenter,
     speechserver,
+    telemetry,
     typing_echo_presenter,
 )
+# Side-effect: instantiates the Telemetry singleton which self-registers
+# with dbus_service via Extension.__init__. Without this call the
+# org.gnome.Orca1.Telemetry interface is not published on the bus.
+_ = telemetry.get_telemetry()
 from .ax_object import AXObject
 from .ax_utilities import AXUtilities
 from .ax_value import AXValue

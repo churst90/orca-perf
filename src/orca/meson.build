@@ -156,6 +156,7 @@ lib_sources = [
   'systemd.py',
   'system_information_presenter.py',
   'table_navigator.py',
+  'telemetry.py',
   'text_attribute_manager.py',
   'text_attribute_names.py',
   'typing_echo_presenter.py',
