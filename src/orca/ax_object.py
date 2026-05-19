@@ -268,13 +268,9 @@ class AXObject:
         while True:
             time.sleep(AXObject.HUNG_TIMEOUT)
             now = time.monotonic()
-            with AXObject._lock:
-                expired = [
-                    key for key, ts in AXObject.HUNG_OBJECTS.items()
-                    if now - ts >= AXObject.HUNG_TIMEOUT
-                ]
-                for key in expired:
-                    AXObject.HUNG_OBJECTS.pop(key, None)
+            for key in list(AXObject.HUNG_OBJECTS):
+                if now - AXObject.HUNG_OBJECTS[key] >= AXObject.HUNG_TIMEOUT:
+                    del AXObject.HUNG_OBJECTS[key]
 
     @staticmethod
     def _clear_all_dictionaries(reason: str = "") -> None:
@@ -413,22 +409,14 @@ class AXObject:
     ) -> bool:
         """Returns True if obj or its app is hung, propagating obj-hung to app."""
 
-        # Locked: _prune_hung_objects iterates HUNG_OBJECTS.items() under
-        # _lock; an unlocked write here can trigger "dictionary changed
-        # size during iteration" in the prune thread. Lock is uncontended
-        # in steady state and only matters when prune is mid-iteration,
-        # so the cost on the hot path is microseconds.
-        with AXObject._lock:
-            obj_hung_ts = (
-                AXObject.HUNG_OBJECTS.get(hash(obj)) if obj is not None else None
-            )
-            app_hung = app is not None and hash(app) in AXObject.HUNG_OBJECTS
-            if obj_hung_ts is not None and app is not None and not app_hung:
-                tokens = ["AXObject: Marking", app, "as hung due to hung source"]
-                debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-                AXObject.HUNG_OBJECTS[hash(app)] = obj_hung_ts
-                app_hung = True
-            return obj_hung_ts is not None or app_hung
+        obj_hung_ts = AXObject.HUNG_OBJECTS.get(hash(obj)) if obj is not None else None
+        app_hung = app is not None and hash(app) in AXObject.HUNG_OBJECTS
+        if obj_hung_ts is not None and app is not None and not app_hung:
+            tokens = ["AXObject: Marking", app, "as hung due to hung source"]
+            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+            AXObject.HUNG_OBJECTS[hash(app)] = obj_hung_ts
+            app_hung = True
+        return obj_hung_ts is not None or app_hung
 
     @staticmethod
     def _set_known_dead_status(obj: Atspi.Accessible, is_dead: bool) -> None:
@@ -466,8 +454,7 @@ class AXObject:
             debug.print_message(debug.LEVEL_INFO, msg, True)
         elif "The process appears to be hung" in error_string:
             debug.print_message(debug.LEVEL_INFO, msg, True)
-            with AXObject._lock:
-                AXObject.HUNG_OBJECTS[hash(obj)] = time.monotonic()
+            AXObject.HUNG_OBJECTS[hash(obj)] = time.monotonic()
             return
         elif re.search(r"accessible/\d+ does not exist", error_string):
             msg = msg.replace(error_string, "object no longer exists")

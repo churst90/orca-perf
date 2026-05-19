@@ -3044,13 +3044,13 @@ class TestAXObject:
             assert not large_warning_found
 
     # -----------------------------------------------------------------
-    # HUNG_OBJECTS synchronization (commit 40c404eff)
+    # HUNG_OBJECTS behavior (matches upstream's lockless pattern)
     # -----------------------------------------------------------------
-    # Three threads can touch HUNG_OBJECTS: the prune thread, check_hung
-    # on the main thread, and handle_error on the AT-SPI dispatch thread.
-    # These tests pin the lock-acquisition contract so a future refactor
-    # can't silently regress to the racy code we inherited from upstream
-    # commit 3e7ae5241.
+    # Upstream's design: _prune_hung_objects snapshots keys via
+    # list(HUNG_OBJECTS) and walks the snapshot, so no lock is needed.
+    # check_hung uses .get()/in for value-capture-safe reads. These
+    # tests cover behavior, not synchronization, since the upstream
+    # pattern makes locks unnecessary at this surface.
 
     def test_check_hung_propagation_uses_get_not_membership_test(
         self,
@@ -3109,15 +3109,11 @@ class TestAXObject:
         AXObject.HUNG_OBJECTS[1] = now - AXObject.HUNG_TIMEOUT - 1.0  # expired
         AXObject.HUNG_OBJECTS[2] = now  # fresh
 
-        # Drive the loop body once by simulating the inner block.
-        # We invoke the same code the prune thread runs.
-        with AXObject._lock:
-            expired = [
-                key for key, ts in AXObject.HUNG_OBJECTS.items()
-                if now - ts >= AXObject.HUNG_TIMEOUT
-            ]
-            for key in expired:
-                AXObject.HUNG_OBJECTS.pop(key, None)
+        # Drive the inner block by simulating the same code _prune_hung_objects
+        # runs (upstream's snapshot pattern, no lock needed).
+        for key in list(AXObject.HUNG_OBJECTS):
+            if now - AXObject.HUNG_OBJECTS[key] >= AXObject.HUNG_TIMEOUT:
+                del AXObject.HUNG_OBJECTS[key]
 
         assert 1 not in AXObject.HUNG_OBJECTS
         assert 2 in AXObject.HUNG_OBJECTS

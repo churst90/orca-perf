@@ -474,32 +474,67 @@ rounds 7+ except where noted:
   provider, so completing the migration would force a fallback to
   espeak-ng. Revisit when (if) a Spiel-Voxin provider ships.
 
-## Lessons from issue #711
+## Lessons from issues #711 and #712
 
-The synth-revert work taught a sharper playbook for future upstream
-submissions:
+Two consecutive misattributed root causes against upstream Orca,
+both caused by the same underlying mistake: reasoning from the perf
+branch's modified source as if it were upstream. The authoritative
+process correction is in `UPSTREAM_SUBMISSION_PROCESS.md`; the rule
+is one sentence:
 
-1. **Reproduce on stock first.** The bug was real, but it was most
-   visible because of `sd-piper`'s unique voice-name set; Voxin and
-   espeak-ng masked the same race. Joanie couldn't reproduce until
-   she switched to Alt+Tab as the trigger. Filing with "visible
-   with X module, hidden with Y" framing would have nudged the
-   mechanism in the right direction.
-2. **Verify the cited code path actually fires.** The local
-   commit message claimed `Script.activate()` ran on focus moves
-   within prefs descendants. A single trace would have shown that
-   `script_manager.set_active_script()` early-returns when the
-   script is unchanged. Inferring root cause from reading code is
-   useful but not authoritative.
-3. **Test against the installed binary, not the dev tree alone.**
-   Differences between the perf branch + sd-piper loaded vs stock
-   Orca + system speechd are the entire point of having a fork;
-   conflating them when reporting upstream bugs costs reviewer
-   time.
-4. **Symptoms travel; mechanisms don't.** Report symptoms
-   precisely; let the maintainer characterize the mechanism. Our
-   patch fix #1 was the right code change — the commit message
-   was the part Joanie rewrote.
+> Develop and verify patches against `upstream/main` exclusively.
+> Only apply to the perf branch after verification.
+
+### What went wrong in each case
+
+**#711 (synth-revert).** The bug itself was real and the runtime-
+override fix was accepted (upstream commit `70232d93`). But the
+"Root Cause" section in the issue body claimed `Script.activate()`
+fires on focus moves within the prefs dialog — which is false.
+`script_manager.set_active_script()` early-returns when the script
+is unchanged, and prefs descendants are all in Orca's own app, so
+the script never changes. I never read upstream's
+`set_active_script()` before writing the analysis. The actual
+trigger (Alt+Tab to a different app) was reframed by Joanie in her
+commit message.
+
+**#712 (HUNG_OBJECTS lock).** Closed as invalid by Joanie within a
+day. I claimed `_prune_hung_objects()` iterates `HUNG_OBJECTS`
+directly and races with `check_hung()` writes. Upstream's version
+uses `for key in list(HUNG_OBJECTS):` — a key-snapshot pattern that
+is race-safe by construction. The perf branch's version (commit
+`40c404eff`, since reverted in this branch) uses `.items()` in a
+list comprehension under a lock, which *does* need the lock — but
+upstream's code never did. I reasoned about my modified code and
+attributed the lock requirement to upstream.
+
+### The pattern
+
+Both failures share one mechanism: reading my local working copy
+when I should have been reading `git show upstream/main:<file>`.
+The perf branch has its own modifications in many of the same
+files I was analyzing, and projecting their semantics onto upstream
+gave plausible-but-wrong root causes both times.
+
+### Process changes adopted
+
+1. **`UPSTREAM_SUBMISSION_PROCESS.md`** — checklist gated on
+   intent-to-submit. Every upstream issue/MR must go through it.
+2. **Develop on a fresh branch from `upstream/main`** —
+   `git checkout -b upstream-fix/<name> upstream/main`. Never edit
+   the perf branch and cherry-pick to upstream.
+3. **Reproduce on stock first** — clean `upstream/main` checkout,
+   stock speech-dispatcher modules only, no `sd-piper`, no perf
+   binary in `~/.local/bin`. If it doesn't reproduce on stock,
+   the bug is in our branch, not upstream.
+4. **Read upstream source for every function in the analysis** —
+   `git show upstream/main:<file>` is the canonical reference, not
+   the working copy.
+5. **Pause submissions until the process change has been
+   exercised** — at least one round of "real-use testing surfaced
+   a bug → reproduced on stock → patch developed against
+   `upstream/main`" must happen before the next submission, to
+   prove the workflow stuck.
 
 ## Next-on-deck (after the round-7 commits above)
 
