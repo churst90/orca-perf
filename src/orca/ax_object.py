@@ -101,6 +101,17 @@ class AXObject:
     LONG_LIVED_ROLES: ClassVar[dict[int, Atspi.Role]] = {}
     LONG_LIVED_PARENTS: ClassVar[dict[int, Atspi.Accessible | None]] = {}
     LONG_LIVED_NAMES: ClassVar[dict[int, str]] = {}
+    # Primitive-bits state cache. The earlier StateSet-object cache
+    # (commits 7dd0f3905 / 6445b86e4) segfaulted because
+    # Atspi.StateSet.contains() dereferences an internal pointer to the
+    # underlying object; if that object went defunct between the cache
+    # write and the later read, libatspi crashed. Storing just the
+    # frozenset of int state values dodges the issue entirely -- no
+    # StateSet object is held, so no stale pointer can be dereferenced.
+    # Populated once-per-object from a freshly-fetched StateSet (at
+    # which point we know the underlying object is alive). Invalidated
+    # on any object:state-changed:* event.
+    LONG_LIVED_STATES: ClassVar[dict[int, frozenset[int]]] = {}
 
     _LL_CACHE_MAX = 8000
 
@@ -207,6 +218,7 @@ class AXObject:
                 AXObject.LONG_LIVED_ROLES.pop(key, None)
                 AXObject.LONG_LIVED_PARENTS.pop(key, None)
                 AXObject.LONG_LIVED_NAMES.pop(key, None)
+                AXObject.LONG_LIVED_STATES.pop(key, None)
                 AXObject.KNOWN_DEAD[key] = True
         elif event_type == "object:property-change:accessible-name":
             with AXObject._lock:
@@ -217,6 +229,9 @@ class AXObject:
         elif event_type == "object:property-change:accessible-parent":
             with AXObject._lock:
                 AXObject.LONG_LIVED_PARENTS.pop(key, None)
+        elif event_type.startswith("object:state-changed:"):
+            with AXObject._lock:
+                AXObject.LONG_LIVED_STATES.pop(key, None)
 
     @staticmethod
     def _ll_store(d: dict, key: int, value) -> None:
@@ -1275,6 +1290,19 @@ class AXObject:
             cache[key] = state_set
             AXObject._record_cache_miss()
 
+        # Populate the primitive-bits LL cache while we have a freshly
+        # fetched StateSet (so .get_states() is safe -- the underlying
+        # object is provably alive right now). Storing only the int
+        # values means subsequent has_state() calls never need to touch
+        # the StateSet object again, so a later defunct cannot cause a
+        # stale-pointer dereference inside libatspi.
+        try:
+            states_frozen = frozenset(int(s) for s in state_set.get_states())
+        except (GLib.GError, TypeError, ValueError):
+            states_frozen = None
+        if states_frozen is not None:
+            AXObject._ll_store(AXObject.LONG_LIVED_STATES, key, states_frozen)
+
         return state_set
 
     @staticmethod
@@ -1283,6 +1311,15 @@ class AXObject:
 
         if not AXObject.is_valid(obj):
             return False
+
+        # LL fast path: no StateSet dereference, so a defunct object
+        # between the cache write and this read cannot crash libatspi.
+        key = hash(obj)
+        with AXObject._lock:
+            cached_states = AXObject.LONG_LIVED_STATES.get(key)
+        if cached_states is not None:
+            AXObject._record_ll_hit()
+            return int(state) in cached_states
 
         return AXObject.get_state_set(obj).contains(state)
 
