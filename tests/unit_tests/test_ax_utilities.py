@@ -2193,3 +2193,178 @@ class TestAXUtilities:
 
         result = AXUtilities.get_position_in_set(mock_obj)
         assert result == 3
+
+    # -----------------------------------------------------------------
+    # _is_descendant: walk-and-cache rewrite (commit e031c1239)
+    # -----------------------------------------------------------------
+    # The rewrite walks the ancestor chain once, caching the resolved
+    # answer at every visited node so subsequent queries on intermediate
+    # nodes are O(1). These tests pin that behavior so a future refactor
+    # cannot silently regress it.
+
+    def test_is_descendant_inclusive_predicate_match_short_circuits(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """inclusive=True with predicate true on obj must return True with no walk."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_utilities import AXUtilities
+
+        cache: dict[int, bool] = {}
+        obj = test_context.Mock(spec=Atspi.Accessible)
+        pred = test_context.Mock(return_value=True)
+        get_parent = test_context.Mock(return_value=None)
+        test_context.patch_object(
+            sys.modules["orca.ax_object"].AXObject, "get_parent", new=get_parent,
+        )
+
+        result = AXUtilities._is_descendant(cache, obj, pred, inclusive=True)
+
+        assert result is True
+        pred.assert_called_once_with(obj)
+        get_parent.assert_not_called()
+        # Per-spec, when inclusive triggers the short-circuit we do NOT
+        # populate the cache for obj (the cache stores the "is any
+        # ancestor a match?" answer, not the inclusive flavor).
+        assert cache == {}
+
+    def test_is_descendant_cache_hit_skips_walk(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """A cached entry for obj must short-circuit without invoking pred or get_parent."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_utilities import AXUtilities
+
+        obj = test_context.Mock(spec=Atspi.Accessible)
+        cache: dict[int, bool] = {hash(obj): True}
+        pred = test_context.Mock()
+        get_parent = test_context.Mock()
+        test_context.patch_object(
+            sys.modules["orca.ax_object"].AXObject, "get_parent", new=get_parent,
+        )
+
+        result = AXUtilities._is_descendant(cache, obj, pred)
+
+        assert result is True
+        pred.assert_not_called()
+        get_parent.assert_not_called()
+
+    def test_is_descendant_caches_all_visited_ancestors_on_match(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """Walking to an ancestor match must cache True at every visited node."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_utilities import AXUtilities
+
+        # Chain: obj -> p1 -> p2 -> p3 -> None. Predicate matches at p3.
+        obj = test_context.Mock(spec=Atspi.Accessible, name="obj")
+        p1 = test_context.Mock(spec=Atspi.Accessible, name="p1")
+        p2 = test_context.Mock(spec=Atspi.Accessible, name="p2")
+        p3 = test_context.Mock(spec=Atspi.Accessible, name="p3")
+
+        parents = {obj: p1, p1: p2, p2: p3, p3: None}
+        get_parent = test_context.Mock(side_effect=lambda x: parents[x])
+        test_context.patch_object(
+            sys.modules["orca.ax_object"].AXObject, "get_parent", new=get_parent,
+        )
+
+        pred = test_context.Mock(side_effect=lambda x: x is p3)
+        cache: dict[int, bool] = {}
+
+        result = AXUtilities._is_descendant(cache, obj, pred)
+
+        assert result is True
+        # Every node visited during the walk must be cached True so a
+        # later query on any of them is O(1).
+        assert cache[hash(obj)] is True
+        assert cache[hash(p1)] is True
+        assert cache[hash(p2)] is True
+        assert cache[hash(p3)] is True
+
+    def test_is_descendant_caches_all_visited_ancestors_on_no_match(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """Walking the full chain without a match must cache False everywhere."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_utilities import AXUtilities
+
+        obj = test_context.Mock(spec=Atspi.Accessible, name="obj")
+        p1 = test_context.Mock(spec=Atspi.Accessible, name="p1")
+        p2 = test_context.Mock(spec=Atspi.Accessible, name="p2")
+        parents = {obj: p1, p1: p2, p2: None}
+        get_parent = test_context.Mock(side_effect=lambda x: parents[x])
+        test_context.patch_object(
+            sys.modules["orca.ax_object"].AXObject, "get_parent", new=get_parent,
+        )
+
+        pred = test_context.Mock(return_value=False)
+        cache: dict[int, bool] = {}
+
+        result = AXUtilities._is_descendant(cache, obj, pred)
+
+        assert result is False
+        assert cache[hash(obj)] is False
+        assert cache[hash(p1)] is False
+        assert cache[hash(p2)] is False
+
+    def test_is_descendant_cached_true_at_ancestor_propagates_down(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """A cached True at an ancestor short-circuits and caches True at descendants."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_utilities import AXUtilities
+
+        obj = test_context.Mock(spec=Atspi.Accessible, name="obj")
+        p1 = test_context.Mock(spec=Atspi.Accessible, name="p1")
+        p2 = test_context.Mock(spec=Atspi.Accessible, name="p2")
+        parents = {obj: p1, p1: p2, p2: None}
+        get_parent = test_context.Mock(side_effect=lambda x: parents[x])
+        test_context.patch_object(
+            sys.modules["orca.ax_object"].AXObject, "get_parent", new=get_parent,
+        )
+
+        # p1 already known to be a descendant -- pred should never be
+        # consulted for the chain.
+        cache: dict[int, bool] = {hash(p1): True}
+        pred = test_context.Mock(side_effect=AssertionError("pred must not run"))
+
+        result = AXUtilities._is_descendant(cache, obj, pred)
+
+        assert result is True
+        assert cache[hash(obj)] is True
+        # p1 already True; p2 never visited (we stopped at p1's hit).
+        assert hash(p2) not in cache
+
+    def test_is_descendant_cached_false_at_ancestor_propagates_down(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """A cached False at an ancestor short-circuits and caches False at descendants."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_utilities import AXUtilities
+
+        obj = test_context.Mock(spec=Atspi.Accessible, name="obj")
+        p1 = test_context.Mock(spec=Atspi.Accessible, name="p1")
+        parents = {obj: p1, p1: None}
+        get_parent = test_context.Mock(side_effect=lambda x: parents[x])
+        test_context.patch_object(
+            sys.modules["orca.ax_object"].AXObject, "get_parent", new=get_parent,
+        )
+
+        cache: dict[int, bool] = {hash(p1): False}
+        pred = test_context.Mock(side_effect=AssertionError("pred must not run"))
+
+        result = AXUtilities._is_descendant(cache, obj, pred)
+
+        assert result is False
+        assert cache[hash(obj)] is False

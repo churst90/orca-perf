@@ -1051,3 +1051,136 @@ class TestSpeechPresenter:
         presenter.destroy_monitor()
 
         assert presenter._monitor is None
+
+    # -----------------------------------------------------------------
+    # _iter_text_with_language: batched language lookup (commit 41760ec68)
+    # -----------------------------------------------------------------
+    # The old _language_at_offset called AXText.get_text_attributes_at_offset
+    # once per character (N IPC calls per spelled word). The replacement
+    # walks attribute runs and yields per-char tuples while issuing one
+    # IPC per language run. These tests pin both the correctness of the
+    # tuples and the call-count contract.
+
+    def test_iter_text_with_language_no_obj_yields_empty_lang(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """obj=None and start_offset=None must yield ('', '') for each char."""
+
+        self._setup_dependencies(test_context)
+        from orca.speech_presenter import SpeechPresenter
+
+        result = list(SpeechPresenter._iter_text_with_language("abc", None, None))
+
+        assert result == [("a", "", ""), ("b", "", ""), ("c", "", "")]
+
+    def test_iter_text_with_language_empty_string_yields_nothing(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """Empty input must produce no output, regardless of obj/offset."""
+
+        self._setup_dependencies(test_context)
+        from orca.speech_presenter import SpeechPresenter
+
+        obj = test_context.Mock()
+        result = list(SpeechPresenter._iter_text_with_language("", obj, 0))
+
+        assert result == []
+
+    def test_iter_text_with_language_single_run_one_ipc(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """All-monolingual input must issue exactly one attribute query."""
+
+        essential_modules = self._setup_dependencies(test_context)
+        ax_text = essential_modules["orca.ax_text"].AXText
+        # One run: covers offsets [0, 5) which is the whole word "hello".
+        ax_text.get_text_attributes_at_offset = test_context.Mock(
+            return_value=({"language": "en-US"}, 0, 5),
+        )
+        from orca.speech_presenter import SpeechPresenter
+
+        obj = test_context.Mock()
+        result = list(SpeechPresenter._iter_text_with_language("hello", obj, 0))
+
+        assert len(result) == 5
+        for ch, lang, dialect in result:
+            assert lang == "en"
+            assert dialect == "US"
+        # Critical perf assertion: only ONE IPC for the whole word.
+        ax_text.get_text_attributes_at_offset.assert_called_once()
+
+    def test_iter_text_with_language_multiple_runs_split_at_boundaries(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """A two-language string must yield runs split at the boundary."""
+
+        essential_modules = self._setup_dependencies(test_context)
+        ax_text = essential_modules["orca.ax_text"].AXText
+        # First call: English covers offsets [0, 3). Second call: Spanish covers [3, 6).
+        ax_text.get_text_attributes_at_offset = test_context.Mock(
+            side_effect=[
+                ({"language": "en-US"}, 0, 3),
+                ({"language": "es-ES"}, 3, 6),
+            ],
+        )
+        from orca.speech_presenter import SpeechPresenter
+
+        obj = test_context.Mock()
+        result = list(SpeechPresenter._iter_text_with_language("abcdef", obj, 0))
+
+        assert [(ch, lang) for ch, lang, _ in result] == [
+            ("a", "en"), ("b", "en"), ("c", "en"),
+            ("d", "es"), ("e", "es"), ("f", "es"),
+        ]
+        # Exactly two IPCs -- one per language run, not per character.
+        assert ax_text.get_text_attributes_at_offset.call_count == 2
+
+    def test_iter_text_with_language_language_without_dialect(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """A bare language tag (no '-') must yield empty dialect string."""
+
+        essential_modules = self._setup_dependencies(test_context)
+        ax_text = essential_modules["orca.ax_text"].AXText
+        ax_text.get_text_attributes_at_offset = test_context.Mock(
+            return_value=({"language": "ja"}, 0, 2),
+        )
+        from orca.speech_presenter import SpeechPresenter
+
+        obj = test_context.Mock()
+        result = list(SpeechPresenter._iter_text_with_language("ab", obj, 0))
+
+        assert result == [("a", "ja", ""), ("b", "ja", "")]
+
+    def test_iter_text_with_language_defensive_against_zero_width_run(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """A degenerate run (end <= current offset) must still advance one char.
+
+        Prevents a livelock if AT-SPI reports a malformed attribute run
+        whose end is at or before the requested offset.
+        """
+
+        essential_modules = self._setup_dependencies(test_context)
+        ax_text = essential_modules["orca.ax_text"].AXText
+        # Every query reports run ending at offset 0 -- defensive advance
+        # must kick the iterator forward one char per call.
+        ax_text.get_text_attributes_at_offset = test_context.Mock(
+            return_value=({"language": "en"}, 0, 0),
+        )
+        from orca.speech_presenter import SpeechPresenter
+
+        obj = test_context.Mock()
+        result = list(SpeechPresenter._iter_text_with_language("xyz", obj, 0))
+
+        # Must terminate, not livelock.
+        assert len(result) == 3
+        # And must have queried once per character (since each run was
+        # zero-width, the defensive bump consumed one char at a time).
+        assert ax_text.get_text_attributes_at_offset.call_count == 3
