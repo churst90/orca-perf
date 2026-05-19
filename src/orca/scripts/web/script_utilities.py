@@ -103,6 +103,15 @@ class Utilities(script_utilities.Utilities):
         self._cached_word_contents: list[tuple[Atspi.Accessible, int, int, str]] | None = None
         self._cached_character_contents: list[tuple[Atspi.Accessible, int, int, str]] | None = None
         self._cached_find_container: Atspi.Accessible | None = None
+        # Caret-order pre-computation cache (perf branch, step 1: skeleton only).
+        # Keyed by hash(AXObject.get_parent(document)), matching _cached_caret_contexts.
+        # Value: ordered list of caret-bearing leaf objects in document order.
+        self._caret_order: dict[int, list[Atspi.Accessible]] = {}
+        # Per-document reverse index: hash(obj) -> position in the ordered list.
+        self._caret_order_index: dict[int, dict[int, int]] = {}
+        # Monotonic generation bumped on any invalidation; lets consumers
+        # detect snapshot staleness across a single navigation step.
+        self._caret_order_generation: int = 0
         self._valid_child_roles: dict[Atspi.Role, list[Atspi.Role]] = {
             Atspi.Role.LIST: [Atspi.Role.LIST_ITEM],
         }
@@ -116,6 +125,12 @@ class Utilities(script_utilities.Utilities):
 
         for key in to_remove:
             self._cached_caret_contexts.pop(key, None)
+
+        # If any cached caret-context entry was defunct, the caret-order
+        # snapshots almost certainly contain defunct refs as well. Drop
+        # them wholesale rather than walk every list; rebuild is cheap.
+        if to_remove:
+            self._caret_order_invalidate()
 
     def dump_cache(
         self,
@@ -177,6 +192,7 @@ class Utilities(script_utilities.Utilities):
         self._cleanup_contexts()
         self._cached_prior_contexts = {}
         self._cached_find_container = None
+        self._caret_order_invalidate()
 
     def clear_content_cache(self) -> None:
         """Clears the cached line, word, object, character contents."""
@@ -186,6 +202,53 @@ class Utilities(script_utilities.Utilities):
         self._cached_line_contents = None
         self._cached_word_contents = None
         self._cached_character_contents = None
+
+    def _caret_order_invalidate(
+        self,
+        document: Atspi.Accessible | None = None,
+    ) -> None:
+        """Invalidates the pre-computed caret-order cache.
+
+        With ``document=None`` drops every cached document. Always bumps
+        the generation counter so any in-flight consumer that captured a
+        snapshot can detect staleness on its next lookup. Skeleton stage:
+        nothing populates the cache yet, so this is purely defensive
+        wiring for the producer/consumer commits that follow.
+        """
+
+        self._caret_order_generation += 1
+        if document is None or not AXObject.is_valid(document):
+            self._caret_order.clear()
+            self._caret_order_index.clear()
+            return
+
+        key = hash(AXObject.get_parent(document))
+        self._caret_order.pop(key, None)
+        self._caret_order_index.pop(key, None)
+
+    def get_caret_order_snapshot(
+        self,
+        document: Atspi.Accessible | None = None,
+    ) -> tuple[list[Atspi.Accessible] | None, dict[int, int] | None, int]:
+        """Returns (ordered_list, index_map, generation) for ``document``.
+
+        Returns ``(None, None, generation)`` when no snapshot exists.
+        Consumers must re-check ``generation`` after any AT-SPI access
+        that could trigger invalidation; if the counter has changed the
+        snapshot must be discarded and the slow path used instead.
+        """
+
+        if not AXObject.is_valid(document):
+            document = self.active_document()
+        if not document:
+            return None, None, self._caret_order_generation
+
+        key = hash(AXObject.get_parent(document))
+        return (
+            self._caret_order.get(key),
+            self._caret_order_index.get(key),
+            self._caret_order_generation,
+        )
 
     def is_document(self, obj: Atspi.Accessible, exclude_document_frame: bool = True) -> bool:
         """Returns True if obj is a document."""
@@ -2985,6 +3048,7 @@ class Utilities(script_utilities.Utilities):
         parent = AXObject.get_parent(document)
         self._cached_caret_contexts.pop(hash(parent), None)
         self._cached_prior_contexts.pop(hash(parent), None)
+        self._caret_order_invalidate(document)
 
     def _handle_event_for_removed_selectable_child(self, event):
         container = None
