@@ -294,24 +294,53 @@ The slow path covers that interval until the next activate or
 document-load-complete event. Adding lazy rebuild on the first
 post-invalidation cache miss is a future refinement.
 
-**Speech-prefs correctness (commit `e05d8868d`)**
+**Speech-prefs correctness — shipped upstream, locally reverted**
 
-Fixes a regression in the GSettings-based prefs system where changing
-the speech synthesizer in Orca preferences and saving would silently
-revert the choice. The combo selection was applied to the live speech
-server but never persisted to dconf; `default.py:Script.activate()`
-calls `update_synthesizer()` on every focus event, which reads dconf
-(still the old value), and on save the dconf value won out. Symptom
-was most visible switching to/from synthesizers with unique voice
-names — `sd-piper`'s `en_US-ryan-medium` etc. — because the voice-name
-side effect in speech-dispatcher's `SET SYNTHESIS_VOICE` would flip
-modules. Fix follows the established `_on_punctuation_changed` pattern
-(register a runtime override in the combo handler, read the combo
-widget in save_settings, clear the override on Cancel).
+The original local fix (commit `e05d8868d`) addressed a real
+user-visible bug — switching the speech synthesizer in Orca prefs and
+saving would silently revert — but cited an incorrect root cause. The
+commit message claimed `Script.activate()` was firing on focus moves
+*within* the prefs dialog and its descendant dialogs. Joanmarie Diggs
+pushed back on this in issue #711:
+`script_manager.set_active_script()` early-returns when the script
+hasn't changed (`script_manager.py:323-324`), so focus moves inside
+the same AT-SPI app (all of prefs and its descendants are inside
+Orca's own app) do not trigger `activate()` at all. The actual
+trigger is Alt+Tab to a *different* application's script while the
+prefs dialog is still open.
+
+Upstream resolution:
+- `70232d93` (Joanie, attributed to Cody Hurst) — took the
+  runtime-override-in-combo-handler portion of the patch verbatim.
+- `16abb2bc` (Joanie) — broader Cancel-revert that clears every
+  runtime override via `clear_runtime_values()` plus `load_user_
+  settings()`, replacing our per-grid `revert_changes()`. Handles
+  future combo handlers automatically.
+- `1657a847e` (Joanie) — `save_settings` now reads via layered
+  lookup, the upstream-equivalent of the "read combo widgets in
+  save" portion of the local patch.
+
+Three local commits were reverted in this branch (`52a934a70`,
+`04178a6b1`, `3c6f26687`) once those upstream commits merged in
+`b8ba47776`. The `.gitignore` ride-along from `e05d8868d` is
+preserved as `f0352d779`.
+
+Most-visible symptom was switching to/from synthesizers with unique
+voice names — `sd-piper`'s `en_US-ryan-medium` etc. — because
+speech-dispatcher's `SET SYNTHESIS_VOICE` actually flips modules in
+that case, while Voxin/espeak voice-family overlap masks the same
+underlying race. Worth noting because the original report only
+described the Piper symptom, and Joanie (testing with Voxin) could
+not reproduce it; she ultimately reproduced via Alt+Tab.
+
+The `9d0d24686` "broaden `is_in_preferences_window` to cover child
+dialogs" commit was also reverted (`04178a6b1`). Its motivation was
+the same incorrect root cause; `activate()` does not fire on focus
+moves within prefs, so the broadened guard was defending against a
+non-existent code path. Restored to upstream's exact-match behavior.
 
 See `ANALYSIS.md` for the full design report on the perf patches, and
 individual commit messages for per-patch rationale and measured impact.
-The synth fix is self-contained in the commit message of `e05d8868d`.
 
 Two changes in this branch fix issues that were observed but never
 reproduced in stock 50.1.2; treat them as caveats:
@@ -427,28 +456,50 @@ worth picking up next:
 All of the originally documented open work has been addressed in
 rounds 7+ except where noted:
 
-- **`focus_manager.is_in_preferences_window()` broadened** in
-  `9d0d24686`. Now treats any window in the same application as the
-  prefs root as "in preferences," so descendant dialogs (Voice
-  Defaults, Global Voice Settings) no longer slip past the guard.
-  The root cause that the synth-revert fix routed around.
+- **Speech-prefs synth-revert** — resolved upstream by `70232d93`,
+  `16abb2bc`, and `1657a847e` (merged here in `b8ba47776`). The
+  three local commits that attempted the same fix were reverted
+  (`52a934a70`, `04178a6b1`, `3c6f26687`) because the upstream fix
+  is broader and the local commit messages cited an incorrect root
+  cause. See the "Speech-prefs correctness" section above.
 - **`AXObject._NAME_LL_CACHE_DISABLED`** — resolved in `2176c4952`,
   cache is back on. Held-key coalesce in `ccda9d591` was the actual
   fix for the wrong-window-title symptom.
 - **Long-lived state cache** — primitive-bits version landed in
   `94e36c02d`. Stores `frozenset[int]` instead of the StateSet object;
   defunct objects can no longer cause a stale-pointer crash.
-- **Cancel-revert UX** for the speech grid now also reverts
-  rate/pitch/pitch-range/volume/family-* runtime overrides, not just
-  the synthesizer combo (`0adbbc56b`).
-- **Same runtime-override gap on other prefs combos** — the
-  is_in_preferences_window fix above eliminates the root cause for
-  all combos at once, so this is no longer a separate hazard.
 - **Spiel migration in `src/orca/spiel.py` has TODOs at lines 467, 476,
   483** for utterance-offset mapping — *intentionally not attempted.*
   The author uses Voxin as the primary TTS and Spiel has no Voxin
   provider, so completing the migration would force a fallback to
   espeak-ng. Revisit when (if) a Spiel-Voxin provider ships.
+
+## Lessons from issue #711
+
+The synth-revert work taught a sharper playbook for future upstream
+submissions:
+
+1. **Reproduce on stock first.** The bug was real, but it was most
+   visible because of `sd-piper`'s unique voice-name set; Voxin and
+   espeak-ng masked the same race. Joanie couldn't reproduce until
+   she switched to Alt+Tab as the trigger. Filing with "visible
+   with X module, hidden with Y" framing would have nudged the
+   mechanism in the right direction.
+2. **Verify the cited code path actually fires.** The local
+   commit message claimed `Script.activate()` ran on focus moves
+   within prefs descendants. A single trace would have shown that
+   `script_manager.set_active_script()` early-returns when the
+   script is unchanged. Inferring root cause from reading code is
+   useful but not authoritative.
+3. **Test against the installed binary, not the dev tree alone.**
+   Differences between the perf branch + sd-piper loaded vs stock
+   Orca + system speechd are the entire point of having a fork;
+   conflating them when reporting upstream bugs costs reviewer
+   time.
+4. **Symptoms travel; mechanisms don't.** Report symptoms
+   precisely; let the maintainer characterize the mechanism. Our
+   patch fix #1 was the right code change — the commit message
+   was the part Joanie rewrote.
 
 ## Next-on-deck (after the round-7 commits above)
 
