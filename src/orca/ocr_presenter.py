@@ -17,29 +17,40 @@
 # Free Software Foundation, Inc., Franklin Street, Fifth Floor,
 # Boston MA  02110-1301 USA.
 
-"""NVDA-style virtual OCR buffer for Orca.
+"""NVDA-style transparent OCR buffer for Orca.
 
-The user presses Orca+R while focused on any window. Orca captures the
-window's pixels, OCRs them, and creates an in-memory virtual buffer
-holding the recognized words plus their screen coordinates. No GTK
-window is shown.
+User presses Orca+R while focused on any window. Orca captures the
+window's pixels, OCRs them, and pops up an *invisible* GTK toplevel
+(opacity zero, undecorated, 1x1, off-screen) containing a read-only
+GtkTextView populated with the recognized text. The TextView grabs
+focus.
 
-Once a buffer exists, the user navigates it through Orca-modified keys
-that mirror flat-review semantics:
+To the user, this feels like a document loaded into the screen
+reader's review buffer: plain arrow keys navigate by character/line,
+Ctrl+Left/Right by word, Shift+arrow selects, Ctrl+C copies, Orca
+reads each position as the caret moves. The "transparent" model
+means no overlay is on screen, so synthesized mouse clicks pass
+straight through to the source window.
 
-  Orca+Right / Orca+Left   next / previous word
-  Orca+Down  / Orca+Up     next / previous line
-  Orca+Home  / Orca+End    first / last word
-  Orca+Enter / Orca+KP_/   left-click at current word's screen position
-  Orca+KP_*                right-click at current word's screen position
+  Plain arrows                Move caret (TextView built-in;
+                              Orca speaks the new position)
+  Ctrl+Left / Ctrl+Right      Word jump (TextView built-in)
+  Home / End                  Line edges
+  Ctrl+Home / Ctrl+End        Buffer edges
+  Shift+anything              Extend selection
+  Ctrl+C                      Copy selection
+  NumPad /                    Left-click in source window at the
+                              screen position of the word at caret
+  NumPad *                    Right-click at same position
+  Return / NumPad Enter       Left-click (same as NumPad /)
+  Escape                      Close the OCR buffer; focus returns
+                              to the source window
+  Orca+R (again)              Re-recognize the source window and
+                              replace the buffer
 
-The cursor is virtual -- there is no widget on screen tracking it.
-Each navigation command speaks the word or line it lands on, the
-same way flat-review commands speak the position they land on. Clicks
-pass straight through to the source window because no Orca surface
-overlaps it. Pressing Orca+R again re-recognizes the focused window
-and replaces the buffer. The buffer otherwise persists until the user
-restarts Orca.
+The source window is captured at OCR time so a second Orca+R while
+the OCR buffer has focus re-recognizes the original window, not the
+invisible OCR buffer itself.
 """
 
 from __future__ import annotations
@@ -50,7 +61,9 @@ from typing import TYPE_CHECKING
 import gi
 
 gi.require_version("Atspi", "2.0")
-from gi.repository import Atspi, GLib  # noqa: E402
+gi.require_version("Gdk", "3.0")
+gi.require_version("Gtk", "3.0")
+from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import (
     ax_device_manager,
@@ -68,86 +81,43 @@ from . import ocr_capture, ocr_engine
 from .ocr_buffer import OCRBuffer, OCRWord
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .scripts import default
 
 
 GROUP_LABEL = "OCR"
 
-# Refuse to feed Tesseract anything larger than this on a side; protects
-# the main loop from a multi-second freeze on a fullscreen 4K capture.
 _MAX_CAPTURE_DIM = 4096
-
-# Pre-OCR upscale factor. 2x is the sweet spot for typical UI text;
-# bump to 3x if recognition rate drops on small-font targets.
 _UPSCALE_FACTOR = 2.0
 
 
 class OCRPresenter(Extension):
-    """Holds the active OCR buffer + virtual cursor and routes commands at it."""
+    """Owns the Orca+R binding and the currently-open OCR buffer window."""
 
     GROUP_LABEL = GROUP_LABEL
 
     def __init__(self) -> None:
-        self._buffer: OCRBuffer | None = None
-        self._source_window: Atspi.Accessible | None = None
-        # (line_index, word_index_within_line); None when no buffer.
-        self._cursor: tuple[int, int] | None = None
+        self._window: _OCRBufferWindow | None = None
+        # Remembered between recognitions so Orca+R while focus is in
+        # our invisible buffer re-recognizes the original source, not
+        # the buffer.
+        self._last_source_window: Atspi.Accessible | None = None
         super().__init__()
 
-    # ---- command registration -------------------------------------------
-
-    # pylint: disable-next=too-many-locals
     def _get_commands(self) -> list[Command]:
-        def kb(keysym: str, mod: int = keybindings.ORCA_MODIFIER_MASK) -> keybindings.KeyBinding:
-            return keybindings.KeyBinding(keysym, mod)
-
-        specs = [
-            ("ocrRecognizeHandler", self.recognize_focused_window,
-             kb("r"), kb("r"),
-             "Recognize the focused window via OCR"),
-            ("ocrNextWordHandler", self.go_next_word,
-             kb("Right"), kb("Right"),
-             "OCR: next word"),
-            ("ocrPreviousWordHandler", self.go_previous_word,
-             kb("Left"), kb("Left"),
-             "OCR: previous word"),
-            ("ocrNextLineHandler", self.go_next_line,
-             kb("Down"), kb("Down"),
-             "OCR: next line"),
-            ("ocrPreviousLineHandler", self.go_previous_line,
-             kb("Up"), kb("Up"),
-             "OCR: previous line"),
-            ("ocrFirstWordHandler", self.go_first_word,
-             kb("Home"), kb("Home"),
-             "OCR: first word"),
-            ("ocrLastWordHandler", self.go_last_word,
-             kb("End"), kb("End"),
-             "OCR: last word"),
-            ("ocrLeftClickHandler", self.left_click_current,
-             kb("KP_Divide"), kb("KP_Divide"),
-             "OCR: left-click at cursor word"),
-            ("ocrRightClickHandler", self.right_click_current,
-             kb("KP_Multiply"), kb("KP_Multiply"),
-             "OCR: right-click at cursor word"),
-            ("ocrEnterClickHandler", self.left_click_current,
-             kb("Return"), kb("Return"),
-             "OCR: left-click at cursor word (alias of NumPad /)"),
+        desktop_kb = keybindings.KeyBinding("r", keybindings.ORCA_MODIFIER_MASK)
+        laptop_kb = keybindings.KeyBinding("r", keybindings.ORCA_MODIFIER_MASK)
+        return [
+            KeyboardCommand(
+                "recognizeFocusedWindowHandler",
+                self.recognize_focused_window,
+                self.GROUP_LABEL,
+                "Recognize the focused window via OCR",
+                desktop_keybinding=desktop_kb,
+                laptop_keybinding=laptop_kb,
+            ),
         ]
-        commands: list[Command] = []
-        for name, function, desktop_kb, laptop_kb, description in specs:
-            commands.append(
-                KeyboardCommand(
-                    name,
-                    function,
-                    self.GROUP_LABEL,
-                    description,
-                    desktop_keybinding=desktop_kb,
-                    laptop_keybinding=laptop_kb,
-                ),
-            )
-        return commands
-
-    # ---- recognize ------------------------------------------------------
 
     @dbus_service.command
     def recognize_focused_window(
@@ -156,9 +126,9 @@ class OCRPresenter(Extension):
         event: input_event.InputEvent | None = None,
         notify_user: bool = True,
     ) -> bool:
-        """Capture + OCR the focused window; replace the active buffer."""
+        """Capture + OCR + open / replace the transparent buffer window."""
 
-        del script, event  # unused in Phase 1/2/3
+        del script, event
 
         if not ocr_engine.is_available():
             if notify_user:
@@ -167,7 +137,17 @@ class OCRPresenter(Extension):
                 )
             return True
 
+        # If our buffer window currently has focus, re-OCR the
+        # remembered source window rather than ourselves.
         window = focus_manager.get_manager().get_active_window()
+        if (
+            window is not None
+            and self._window is not None
+            and self._window.owns_accessible(window)
+            and self._last_source_window is not None
+        ):
+            window = self._last_source_window
+
         if window is None:
             if notify_user:
                 presentation_manager.get_manager().present_message(
@@ -175,10 +155,6 @@ class OCRPresenter(Extension):
                 )
             return True
 
-        # SCREEN coords are mandatory: WINDOW coord type returns (0, 0)
-        # for a top-level since the top-level is at the origin of its
-        # own coordinate space. The previous AXComponent.get_rect path
-        # silently broke on libatspi builds that respect that semantics.
         try:
             rect = Atspi.Component.get_extents(window, Atspi.CoordType.SCREEN)
         except GLib.GError as error:
@@ -256,231 +232,198 @@ class OCRPresenter(Extension):
         debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
 
         if buffer.is_empty:
-            self._buffer = None
-            self._source_window = None
-            self._cursor = None
             if notify_user:
                 presentation_manager.get_manager().present_message(
                     "OCR found no readable text."
                 )
             return True
 
+        self._last_source_window = window
+        self._open_window(buffer, window)
+        return True
+
+    def _open_window(self, buffer: OCRBuffer, source_window: Atspi.Accessible) -> None:
+        if self._window is not None:
+            self._window.destroy()
+            self._window = None
+
+        self._window = _OCRBufferWindow(
+            buffer,
+            source_window,
+            destroyed_callback=self._on_window_destroyed,
+        )
+        self._window.show()
+
+    def _on_window_destroyed(self, _widget: Gtk.Widget) -> None:
+        self._window = None
+
+
+class _OCRBufferWindow:
+    """Invisible toplevel containing a read-only TextView of the OCR text.
+
+    Opacity zero, undecorated, 1x1, positioned just off-screen. The
+    TextView grabs focus on show, so plain arrow keys navigate the
+    recognized text and Orca speaks each position. The window itself
+    has accessible name "OCR buffer" so the user gets a clean spoken
+    cue when focus moves into it.
+    """
+
+    def __init__(
+        self,
+        buffer: OCRBuffer,
+        source_window: Atspi.Accessible,
+        destroyed_callback: Callable[[Gtk.Widget], None],
+    ) -> None:
         self._buffer = buffer
-        self._source_window = window
-        self._cursor = (0, 0)
-        if notify_user:
-            first = self._current_word()
-            if first is not None:
-                presentation_manager.get_manager().present_message(first.text)
-        return True
+        self._source_window = source_window
+        self._text_buffer: Gtk.TextBuffer | None = None
+        self._view: Gtk.TextView | None = None
+        # (start_offset, end_offset_exclusive, OCRWord) for click routing.
+        self._word_offsets: list[tuple[int, int, OCRWord]] = []
+        self._win = self._build()
+        self._win.connect("destroy", destroyed_callback)
 
-    # ---- navigation -----------------------------------------------------
+    def _build(self) -> Gtk.Window:
+        win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        win.set_title(f"OCR: {self._buffer.source_window_name or 'window'}")
+        win.set_opacity(0.0)
+        win.set_decorated(False)
+        win.set_skip_taskbar_hint(True)
+        win.set_skip_pager_hint(True)
+        win.set_resizable(False)
+        win.set_default_size(1, 1)
+        # Park it just off-screen so a 1x1 visible footprint never
+        # competes with a synthesized click coord on a small display.
+        win.move(-2, -2)
 
-    def _current_word(self) -> OCRWord | None:
-        if self._buffer is None or self._cursor is None:
-            return None
-        line_idx, word_idx = self._cursor
-        if not (0 <= line_idx < len(self._buffer.lines)):
-            return None
-        line = self._buffer.lines[line_idx]
-        if not (0 <= word_idx < len(line.words)):
-            return None
-        return line.words[word_idx]
-
-    def _require_buffer(self) -> bool:
-        """Speak a hint and return False if no OCR buffer is active."""
-
-        if self._buffer is None or self._cursor is None:
-            presentation_manager.get_manager().present_message(
-                "No OCR text. Press Orca R to recognize the focused window."
+        accessible = win.get_accessible()
+        if accessible is not None:
+            accessible.set_name(
+                f"OCR buffer for {self._buffer.source_window_name or 'window'}"
             )
+            accessible.set_description(
+                "Recognized text. Use arrow keys to navigate, "
+                "NumPad slash to click, NumPad star to right click, "
+                "Escape to close."
+            )
+
+        view = Gtk.TextView()
+        view.set_editable(False)
+        view.set_cursor_visible(True)
+        view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        view.set_left_margin(0)
+        view.set_right_margin(0)
+        view.set_top_margin(0)
+        view.set_bottom_margin(0)
+        win.add(view)
+
+        text_buffer, word_offsets = self._build_text_and_offsets(self._buffer)
+        view.set_buffer(text_buffer)
+        self._view = view
+        self._text_buffer = text_buffer
+        self._word_offsets = word_offsets
+
+        view_accessible = view.get_accessible()
+        if view_accessible is not None:
+            view_accessible.set_name("OCR text")
+
+        view.connect("key-press-event", self._on_view_keypress)
+        return win
+
+    @staticmethod
+    def _build_text_and_offsets(
+        buffer: OCRBuffer,
+    ) -> tuple[Gtk.TextBuffer, list[tuple[int, int, OCRWord]]]:
+        text_buffer = Gtk.TextBuffer()
+        word_offsets: list[tuple[int, int, OCRWord]] = []
+
+        cursor = 0
+        parts: list[str] = []
+        for line_idx, line in enumerate(buffer.lines):
+            for word_idx, word in enumerate(line.words):
+                start = cursor
+                parts.append(word.text)
+                cursor += len(word.text)
+                word_offsets.append((start, cursor, word))
+                if word_idx < len(line.words) - 1:
+                    parts.append(" ")
+                    cursor += 1
+            if line_idx < len(buffer.lines) - 1:
+                parts.append("\n")
+                cursor += 1
+
+        text_buffer.set_text("".join(parts))
+        return text_buffer, word_offsets
+
+    def owns_accessible(self, accessible: Atspi.Accessible) -> bool:
+        """True if the given Atspi accessible is the buffer window's toplevel."""
+
+        if accessible is None:
             return False
-        return True
+        name = AXObject.get_name(accessible) or ""
+        return name.startswith("OCR buffer for ")
 
-    @dbus_service.command
-    def go_next_word(
-        self, script: default.Script,
-        event: input_event.InputEvent | None = None,
-        notify_user: bool = True,
-    ) -> bool:
-        """Advance the OCR cursor to the next word."""
+    def show(self) -> None:
+        if self._view is None or self._text_buffer is None:
+            return
+        self._win.show_all()  # pylint: disable=no-member
+        self._win.present_with_time(int(time.time()))
+        self._text_buffer.place_cursor(self._text_buffer.get_start_iter())
+        self._view.grab_focus()
 
-        del script, event
-        if not self._require_buffer():
+    def destroy(self) -> None:
+        self._win.destroy()
+
+    # ---- click handlers ------------------------------------------------
+
+    def _on_view_keypress(self, _widget: Gtk.TextView, event: Gdk.EventKey) -> bool:
+        keyval = event.keyval
+        if keyval == Gdk.KEY_Escape:
+            self.destroy()
             return True
-        assert self._buffer is not None and self._cursor is not None
-        line_idx, word_idx = self._cursor
-        line = self._buffer.lines[line_idx]
-        if word_idx + 1 < len(line.words):
-            self._cursor = (line_idx, word_idx + 1)
-        elif line_idx + 1 < len(self._buffer.lines):
-            self._cursor = (line_idx + 1, 0)
-        else:
-            if notify_user:
-                presentation_manager.get_manager().present_message("End of OCR text.")
+        if keyval == Gdk.KEY_KP_Divide:
+            self._click(button="b1c", verb="Click")
             return True
-        if notify_user:
-            word = self._current_word()
-            if word is not None:
-                presentation_manager.get_manager().present_message(word.text)
-        return True
-
-    @dbus_service.command
-    def go_previous_word(
-        self, script: default.Script,
-        event: input_event.InputEvent | None = None,
-        notify_user: bool = True,
-    ) -> bool:
-        """Move the OCR cursor to the previous word."""
-
-        del script, event
-        if not self._require_buffer():
+        if keyval == Gdk.KEY_KP_Multiply:
+            self._click(button="b3c", verb="Right-click")
             return True
-        assert self._buffer is not None and self._cursor is not None
-        line_idx, word_idx = self._cursor
-        if word_idx > 0:
-            self._cursor = (line_idx, word_idx - 1)
-        elif line_idx > 0:
-            prev_line = self._buffer.lines[line_idx - 1]
-            self._cursor = (line_idx - 1, len(prev_line.words) - 1)
-        else:
-            if notify_user:
-                presentation_manager.get_manager().present_message("Start of OCR text.")
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self._click(button="b1c", verb="Click")
             return True
-        if notify_user:
-            word = self._current_word()
-            if word is not None:
-                presentation_manager.get_manager().present_message(word.text)
-        return True
+        return False
 
-    @dbus_service.command
-    def go_next_line(
-        self, script: default.Script,
-        event: input_event.InputEvent | None = None,
-        notify_user: bool = True,
-    ) -> bool:
-        """Advance the OCR cursor to the first word of the next line."""
+    def _current_cursor_offset(self) -> int | None:
+        if self._text_buffer is None:
+            return None
+        mark = self._text_buffer.get_insert()
+        return self._text_buffer.get_iter_at_mark(mark).get_offset()
 
-        del script, event
-        if not self._require_buffer():
-            return True
-        assert self._buffer is not None and self._cursor is not None
-        line_idx, _ = self._cursor
-        if line_idx + 1 >= len(self._buffer.lines):
-            if notify_user:
-                presentation_manager.get_manager().present_message("End of OCR text.")
-            return True
-        self._cursor = (line_idx + 1, 0)
-        if notify_user:
-            line = self._buffer.lines[self._cursor[0]]
-            presentation_manager.get_manager().present_message(line.text)
-        return True
+    def _find_word_at_offset(self, offset: int) -> OCRWord | None:
+        if not self._word_offsets:
+            return None
+        for start, end, word in self._word_offsets:
+            if start <= offset <= end:
+                return word
+        # Cursor on whitespace, newline, or past the last word:
+        # fall back to the word with the closest start offset.
+        best = min(self._word_offsets, key=lambda we: abs(we[0] - offset))
+        return best[2]
 
-    @dbus_service.command
-    def go_previous_line(
-        self, script: default.Script,
-        event: input_event.InputEvent | None = None,
-        notify_user: bool = True,
-    ) -> bool:
-        """Move the OCR cursor to the first word of the previous line."""
+    def _click(self, button: str, verb: str) -> None:
+        offset = self._current_cursor_offset()
+        if offset is None:
+            presentation_manager.get_manager().present_message(
+                "OCR: no caret position."
+            )
+            return
 
-        del script, event
-        if not self._require_buffer():
-            return True
-        assert self._buffer is not None and self._cursor is not None
-        line_idx, _ = self._cursor
-        if line_idx <= 0:
-            if notify_user:
-                presentation_manager.get_manager().present_message("Start of OCR text.")
-            return True
-        self._cursor = (line_idx - 1, 0)
-        if notify_user:
-            line = self._buffer.lines[self._cursor[0]]
-            presentation_manager.get_manager().present_message(line.text)
-        return True
-
-    @dbus_service.command
-    def go_first_word(
-        self, script: default.Script,
-        event: input_event.InputEvent | None = None,
-        notify_user: bool = True,
-    ) -> bool:
-        """Jump the OCR cursor to the first word of the buffer."""
-
-        del script, event
-        if not self._require_buffer():
-            return True
-        self._cursor = (0, 0)
-        if notify_user:
-            word = self._current_word()
-            if word is not None:
-                presentation_manager.get_manager().present_message(word.text)
-        return True
-
-    @dbus_service.command
-    def go_last_word(
-        self, script: default.Script,
-        event: input_event.InputEvent | None = None,
-        notify_user: bool = True,
-    ) -> bool:
-        """Jump the OCR cursor to the last word of the buffer."""
-
-        del script, event
-        if not self._require_buffer():
-            return True
-        assert self._buffer is not None
-        last_line_idx = len(self._buffer.lines) - 1
-        last_word_idx = len(self._buffer.lines[last_line_idx].words) - 1
-        self._cursor = (last_line_idx, last_word_idx)
-        if notify_user:
-            word = self._current_word()
-            if word is not None:
-                presentation_manager.get_manager().present_message(word.text)
-        return True
-
-    # ---- click ----------------------------------------------------------
-
-    @dbus_service.command
-    def left_click_current(
-        self, script: default.Script,
-        event: input_event.InputEvent | None = None,
-        notify_user: bool = True,
-    ) -> bool:
-        """Synthesize a left mouse click at the cursor word's screen position."""
-
-        del script, event
-        return self._click_current(button="b1c", verb="Click", notify_user=notify_user)
-
-    @dbus_service.command
-    def right_click_current(
-        self, script: default.Script,
-        event: input_event.InputEvent | None = None,
-        notify_user: bool = True,
-    ) -> bool:
-        """Synthesize a right mouse click at the cursor word's screen position."""
-
-        del script, event
-        return self._click_current(button="b3c", verb="Right-click", notify_user=notify_user)
-
-    def _click_current(self, button: str, verb: str, notify_user: bool) -> bool:
-        if not self._require_buffer():
-            return True
-        word = self._current_word()
+        word = self._find_word_at_offset(offset)
         if word is None:
-            if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR: cursor is not on a word."
-                )
-            return True
-        if self._source_window is None:
-            if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR: source window is unknown."
-                )
-            return True
+            presentation_manager.get_manager().present_message(
+                "OCR: no word at the caret position."
+            )
+            return
 
-        # Re-fetch the source window's SCREEN rect at click time so the
-        # click still lands correctly if the window moved since OCR.
         try:
             rect = Atspi.Component.get_extents(
                 self._source_window, Atspi.CoordType.SCREEN,
@@ -488,17 +431,13 @@ class OCRPresenter(Extension):
         except GLib.GError as error:
             msg = f"OCR PRESENTER: SCREEN get_extents failed at click: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
-            if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR: source window no longer accessible."
-                )
-            return True
+            presentation_manager.get_manager().present_message(
+                "OCR: source window no longer accessible."
+            )
+            return
 
-        # Absolute screen center of the word bbox.
         screen_x = word.screen_x + word.width // 2
         screen_y = word.screen_y + word.height // 2
-        # ax_device_manager.generate_mouse_event treats coords as
-        # relative to the obj it is given.
         rel_x = screen_x - int(rect.x)
         rel_y = screen_y - int(rect.y)
 
@@ -515,28 +454,11 @@ class OCRPresenter(Extension):
             self._source_window, rel_x, rel_y, button,
         )
         if not ok:
-            if notify_user:
-                presentation_manager.get_manager().present_message(
-                    f"OCR: {verb.lower()} did not reach the window."
-                )
-            return True
-        if notify_user:
             presentation_manager.get_manager().present_message(
-                f"{verb}: {word.text}"
+                f"OCR: {verb.lower()} did not reach the window."
             )
-        return True
-
-    # ---- introspection (for tests / external D-Bus callers) -------------
-
-    def get_last_buffer(self) -> OCRBuffer | None:
-        """Returns the most recently produced buffer, or None."""
-
-        return self._buffer
-
-    def get_cursor(self) -> tuple[int, int] | None:
-        """Returns the current (line, word) cursor position, or None."""
-
-        return self._cursor
+            return
+        presentation_manager.get_manager().present_message(f"{verb}: {word.text}")
 
 
 _presenter: OCRPresenter | None = None
