@@ -401,6 +401,16 @@ class _OCRResultDialog:
         best = min(self._word_offsets, key=lambda we: abs(we[0] - offset))
         return best[2]
 
+    # Milliseconds to wait after destroying the OCR dialog before
+    # synthesizing the click. On X11, Gtk.Widget.destroy() removes the
+    # widget tree synchronously but the X server's unmap-notify is
+    # asynchronous; if we click too early the XTest event lands on the
+    # still-mapped dialog (selecting our own TextView text) instead of
+    # the source window. 150ms is enough for the round-trip on every
+    # local-display setup we have tested; bump it if a slower setup
+    # ever surfaces the same symptom.
+    _CLICK_DELAY_MS = 150
+
     def _click_current_word(self, button: str) -> bool:
         """Synthesize a mouse click at the screen center of the word at the caret.
 
@@ -419,14 +429,23 @@ class _OCRResultDialog:
             )
             return True
 
-        # Center of the word's bbox, in absolute screen coordinates.
+        # Absolute screen center of the recognized word bbox.
         screen_x = word.screen_x + word.width // 2
         screen_y = word.screen_y + word.height // 2
+        action = "Right-click" if button == "b3c" else "Click"
 
-        # Translate to coordinates relative to the source window (the
-        # device API treats coords as relative to the obj it is given).
+        # Snapshot everything we need before destroying the dialog --
+        # _source_window and the word coords are immutable; everything
+        # else lives on `self`, which becomes useless after destroy().
+        source_window = self._source_window
+        word_text = word.text
+
+        # Pre-flight the source window so we can warn the user
+        # synchronously if the window has gone away. We re-fetch its
+        # rect inside the timeout so the click uses fresh coordinates
+        # (the window may have moved while the dialog was open).
         try:
-            window_rect = AXComponent.get_rect(self._source_window)
+            initial_rect = AXComponent.get_rect(source_window)
         except Exception as error:
             msg = f"OCR PRESENTER: Failed to read source window rect: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
@@ -435,25 +454,41 @@ class _OCRResultDialog:
             )
             return True
 
-        rel_x = screen_x - int(window_rect.x)
-        rel_y = screen_y - int(window_rect.y)
-        action = "Right-click" if button == "b3c" else "Click"
-
         tokens = [
             "OCR PRESENTER:", action,
-            f"on word {word.text!r}",
-            f"at screen ({screen_x},{screen_y}) =",
-            f"window-rel ({rel_x},{rel_y})",
+            f"on word {word_text!r}",
+            f"@ screen ({screen_x},{screen_y});",
+            f"OCR-time window origin ({self._buffer.capture_x},{self._buffer.capture_y});",
+            f"click-time window origin ({int(initial_rect.x)},{int(initial_rect.y)})",
         ]
         debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
 
-        # Hide immediately so the dialog isn't under the synthesized
-        # cursor; destroy on the next idle so the click event is
-        # processed against the now-focused source window.
-        self._gui.hide()
-        source_window = self._source_window
+        # Destroy the dialog first (synchronous unparent + queue
+        # destruction in GTK) so it cannot receive the synthesized
+        # click. The timeout gives X11 enough wall-clock to actually
+        # unmap the toplevel before XTest fires the button event.
+        self._gui.destroy()
 
         def _do_click() -> bool:
+            try:
+                rect_now = AXComponent.get_rect(source_window)
+            except Exception as error:
+                msg = f"OCR PRESENTER: rect fetch failed in click callback: {error}"
+                debug.print_message(debug.LEVEL_WARNING, msg, True)
+                presentation_manager.get_manager().present_message(
+                    "OCR: source window no longer accessible."
+                )
+                return False
+
+            rel_x = screen_x - int(rect_now.x)
+            rel_y = screen_y - int(rect_now.y)
+            tokens = [
+                "OCR PRESENTER: firing", action,
+                f"at window-rel ({rel_x},{rel_y})",
+                f"on {AXObject.get_name(source_window)!r}",
+            ]
+            debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
+
             ok = ax_device_manager.get_manager().generate_mouse_event(
                 source_window, rel_x, rel_y, button,
             )
@@ -461,10 +496,9 @@ class _OCRResultDialog:
                 presentation_manager.get_manager().present_message(
                     f"OCR: {action.lower()} did not reach the window."
                 )
-            self._gui.destroy()
             return False
 
-        GLib.idle_add(_do_click)
+        GLib.timeout_add(self._CLICK_DELAY_MS, _do_click)
         return True
 
     def show(self) -> None:
