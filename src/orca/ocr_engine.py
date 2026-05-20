@@ -62,6 +62,39 @@ def is_available() -> bool:
     return shutil.which("tesseract") is not None
 
 
+def list_available_languages() -> list[str]:
+    """Return the list of Tesseract language codes installed on the system.
+
+    Runs `tesseract --list-langs` and parses the output. Returns
+    ['eng'] as a safe fallback if tesseract is not installed, the
+    subprocess fails, or the output cannot be parsed -- this keeps
+    the preferences UI usable on systems where the langpack is
+    incomplete or tesseract is not yet installed.
+    """
+
+    if not is_available():
+        return ["eng"]
+    try:
+        result = subprocess.run(
+            ["tesseract", "--list-langs"],
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return ["eng"]
+    if result.returncode != 0:
+        return ["eng"]
+    # First line is "List of available languages (N):"; subsequent
+    # lines are language codes, one per line. Some tesseract builds
+    # also include "osd" (orientation/script detection) which is
+    # not a real OCR language; filter it out.
+    lines = result.stdout.decode(errors="replace").splitlines()
+    langs = [line.strip() for line in lines[1:] if line.strip()]
+    langs = [lang for lang in langs if lang != "osd"]
+    return langs or ["eng"]
+
+
 def recognize(
     png_bytes: bytes,
     capture_x: int,

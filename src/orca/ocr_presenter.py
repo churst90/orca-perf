@@ -81,6 +81,7 @@ from . import (
     input_event,
     keybindings,
     messages,
+    preferences_grid_base,
     presentation_manager,
 )
 from .ax_object import AXObject
@@ -1034,6 +1035,38 @@ class OCRPresenter(Extension):
             self.KEY_CONFIDENCE_THRESHOLD, "i", _DEFAULT_CONFIDENCE,
         )
 
+    @dbus_service.setter
+    def set_ocr_lang(self, value: str) -> bool:
+        """Set the Tesseract language code used for OCR."""
+
+        gsettings_registry.get_registry().set_runtime_value(
+            self._SCHEMA, self.KEY_LANG, value,
+        )
+        return True
+
+    @dbus_service.setter
+    def set_upscale_factor(self, value: float) -> bool:
+        """Set the pre-OCR bilinear upscale factor."""
+
+        gsettings_registry.get_registry().set_runtime_value(
+            self._SCHEMA, self.KEY_UPSCALE_FACTOR, value,
+        )
+        return True
+
+    @dbus_service.setter
+    def set_confidence_threshold(self, value: int) -> bool:
+        """Set the minimum Tesseract word confidence."""
+
+        gsettings_registry.get_registry().set_runtime_value(
+            self._SCHEMA, self.KEY_CONFIDENCE_THRESHOLD, value,
+        )
+        return True
+
+    def create_preferences_grid(self) -> OCRPreferencesGrid:
+        """Returns the GtkGrid containing the OCR preferences UI."""
+
+        return OCRPreferencesGrid(self)
+
     # ---- introspection -----------------------------------------------
 
     def is_mode_active(self) -> bool:
@@ -1047,6 +1080,56 @@ class OCRPresenter(Extension):
 
     def get_anchor(self) -> Position | None:
         return self._anchor
+
+
+class OCRPreferencesGrid(preferences_grid_base.AutoPreferencesGrid):
+    """GtkGrid containing the OCR preferences page.
+
+    Three controls:
+
+      - Language: an enum picker whose options are populated at
+        construction time from `tesseract --list-langs` (with a
+        safe fallback to ['eng'] if tesseract is not installed).
+        Picking a value writes it to org.gnome.Orca.OCR.lang.
+
+      - Upscale factor: a float range control (1.0 to 4.0) that
+        writes to org.gnome.Orca.OCR.upscale-factor.
+
+      - Confidence threshold: an int range control (0 to 100) that
+        writes to org.gnome.Orca.OCR.confidence-threshold.
+    """
+
+    _gsettings_schema = "ocr"
+
+    def __init__(self, presenter: OCRPresenter) -> None:
+        languages = ocr_engine.list_available_languages()
+        controls: list[preferences_grid_base.ControlType] = [
+            preferences_grid_base.EnumPreferenceControl(
+                label=guilabels.OCR_LANGUAGE,
+                options=list(languages),
+                values=list(languages),
+                getter=presenter.get_ocr_lang,
+                setter=presenter.set_ocr_lang,
+                prefs_key=OCRPresenter.KEY_LANG,
+            ),
+            preferences_grid_base.FloatRangePreferenceControl(
+                label=guilabels.OCR_UPSCALE_FACTOR,
+                minimum=1.0,
+                maximum=4.0,
+                getter=presenter.get_upscale_factor,
+                setter=presenter.set_upscale_factor,
+                prefs_key=OCRPresenter.KEY_UPSCALE_FACTOR,
+            ),
+            preferences_grid_base.IntRangePreferenceControl(
+                label=guilabels.OCR_CONFIDENCE_THRESHOLD,
+                minimum=0,
+                maximum=100,
+                getter=presenter.get_confidence_threshold,
+                setter=presenter.set_confidence_threshold,
+                prefs_key=OCRPresenter.KEY_CONFIDENCE_THRESHOLD,
+            ),
+        ]
+        super().__init__(guilabels.OCR_PAGE_TITLE, controls)
 
 
 _presenter: OCRPresenter | None = None
