@@ -423,6 +423,16 @@ upstream-merge readiness (i18n, unit tests, settings schema,
 Wayland portal capture, user docs page) are detailed in
 `submissions/ocr_feature/PRODUCTION_READINESS.md`.
 
+The user-extension version of OCR has been split out into its own
+repository: <https://github.com/churst90/orca-ocr>. That repo
+ships the package as `manifest.toml + ocr.py + buffer.py +
+capture.py + engine.py` and as a pre-built `ocr.orca-ext` archive
+installable via `orca --install-extension`. The built-in version
+in this branch (`src/orca/ocr_presenter.py` etc.) remains the
+canonical implementation and the one the perf branch's author
+runs daily; the standalone extension is the distribution form for
+other users.
+
 **Speech-prefs correctness — shipped upstream, locally reverted**
 
 The original local fix (commit `e05d8868d`) addressed a real
