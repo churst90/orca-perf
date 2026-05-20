@@ -71,12 +71,15 @@ from gi.repository import Atspi, GLib  # noqa: E402
 from . import (
     ax_device_manager,
     clipboard,
+    cmdnames,
     command_manager,
     dbus_service,
     debug,
     focus_manager,
+    guilabels,
     input_event,
     keybindings,
+    messages,
     presentation_manager,
 )
 from .ax_object import AXObject
@@ -89,7 +92,10 @@ if TYPE_CHECKING:
     from .scripts import default
 
 
-GROUP_LABEL = "OCR"
+# Group label for the OCR keybindings group (shown in prefs). Aliased
+# here so default.Script._register_builtin_extensions can use
+# ocr_presenter.GROUP_LABEL without touching guilabels directly.
+GROUP_LABEL = guilabels.KB_GROUP_OCR
 
 _MAX_CAPTURE_DIM = 4096
 _UPSCALE_FACTOR = 2.0
@@ -102,6 +108,32 @@ class OCRPresenter(Extension):
     """OCR buffer with character cursor, selection, click pass-through."""
 
     GROUP_LABEL = GROUP_LABEL
+
+    # Maps every mode-gated handler attribute to its translated command
+    # description in cmdnames. KP_Divide and KP_Enter both call
+    # left_click_current; they share this description.
+    _HANDLER_DESCRIPTIONS: dict[str, str] = {
+        "go_previous_line":           cmdnames.OCR_PREVIOUS_LINE,
+        "go_next_line":               cmdnames.OCR_NEXT_LINE,
+        "go_previous_word":           cmdnames.OCR_PREVIOUS_WORD,
+        "go_next_word":               cmdnames.OCR_NEXT_WORD,
+        "go_previous_character":      cmdnames.OCR_PREVIOUS_CHARACTER,
+        "go_next_character":          cmdnames.OCR_NEXT_CHARACTER,
+        "go_first_word":              cmdnames.OCR_FIRST_WORD,
+        "go_last_word":               cmdnames.OCR_LAST_WORD,
+        "speak_current_word":         cmdnames.OCR_SPEAK_CURRENT_WORD,
+        "select_previous_line":       cmdnames.OCR_SELECT_PREVIOUS_LINE,
+        "select_next_line":           cmdnames.OCR_SELECT_NEXT_LINE,
+        "select_previous_word":       cmdnames.OCR_SELECT_PREVIOUS_WORD,
+        "select_next_word":           cmdnames.OCR_SELECT_NEXT_WORD,
+        "select_previous_character":  cmdnames.OCR_SELECT_PREVIOUS_CHARACTER,
+        "select_next_character":      cmdnames.OCR_SELECT_NEXT_CHARACTER,
+        "set_anchor":                 cmdnames.OCR_SET_ANCHOR,
+        "copy_selection_or_line":     cmdnames.OCR_COPY_SELECTION_OR_LINE,
+        "left_click_current":         cmdnames.OCR_LEFT_CLICK,
+        "right_click_current":        cmdnames.OCR_RIGHT_CLICK,
+        "exit_ocr_mode":              cmdnames.OCR_EXIT_MODE,
+    }
 
     # (keysym, modifier, handler_attribute) for every key OCR mode owns.
     # Each entry becomes a KeyboardCommand whose name is unique even when
@@ -153,7 +185,7 @@ class OCRPresenter(Extension):
                 "ocrToggleHandler",
                 self.toggle_ocr_mode,
                 self.GROUP_LABEL,
-                "Toggle OCR mode on the focused window",
+                cmdnames.OCR_TOGGLE,
                 desktop_keybinding=keybindings.KeyBinding(
                     "r", keybindings.ORCA_MODIFIER_MASK,
                 ),
@@ -163,11 +195,12 @@ class OCRPresenter(Extension):
             ),
         ]
         for keysym, mod, attr in self._MODE_KEYS:
+            description = self._HANDLER_DESCRIPTIONS.get(attr, attr)
             cmd = KeyboardCommand(
                 self._ocr_command_name(keysym, mod, attr),
                 getattr(self, attr),
                 self.GROUP_LABEL,
-                f"OCR: {attr.replace('_', ' ')} ({keysym}, mod={mod})",
+                description,
                 desktop_keybinding=keybindings.KeyBinding(keysym, mod),
                 laptop_keybinding=keybindings.KeyBinding(keysym, mod),
             )
@@ -195,17 +228,13 @@ class OCRPresenter(Extension):
     def _enter_ocr_mode(self, notify_user: bool) -> bool:
         if not ocr_engine.is_available():
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR unavailable: tesseract is not installed."
-                )
+                self._say(messages.OCR_TESSERACT_NOT_AVAILABLE)
             return True
 
         window = focus_manager.get_manager().get_active_window()
         if window is None:
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR: no focused window."
-                )
+                self._say(messages.OCR_NO_FOCUSED_WINDOW)
             return True
 
         try:
@@ -214,30 +243,24 @@ class OCRPresenter(Extension):
             msg = f"OCR PRESENTER: SCREEN get_extents failed: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR: cannot determine window position."
-                )
+                self._say(messages.OCR_NO_WINDOW_POSITION)
             return True
 
         x, y = int(rect.x), int(rect.y)
         width, height = int(rect.width), int(rect.height)
         if width <= 0 or height <= 0:
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR: focused window has no measurable size."
-                )
+                self._say(messages.OCR_NO_WINDOW_SIZE)
             return True
         if width > _MAX_CAPTURE_DIM or height > _MAX_CAPTURE_DIM:
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    f"OCR: window too large ({width} by {height})."
-                )
+                self._say(messages.OCR_WINDOW_TOO_LARGE % (width, height))
             return True
 
         window_name = AXObject.get_name(window) or ""
 
         if notify_user:
-            presentation_manager.get_manager().present_message("Recognizing.")
+            self._say(messages.OCR_RECOGNIZING)
 
         start = time.time()
         try:
@@ -250,17 +273,13 @@ class OCRPresenter(Extension):
             msg = f"OCR PRESENTER: Capture failed: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    f"OCR capture failed: {error}"
-                )
+                self._say(messages.OCR_CAPTURE_FAILED % error)
             return True
         except ocr_engine.OCREngineError as error:
             msg = f"OCR PRESENTER: Recognition failed: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    f"OCR engine failed: {error}"
-                )
+                self._say(messages.OCR_ENGINE_FAILED % error)
             return True
 
         elapsed = time.time() - start
@@ -280,9 +299,7 @@ class OCRPresenter(Extension):
 
         if buffer.is_empty:
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR found no readable text."
-                )
+                self._say(messages.OCR_NO_READABLE_TEXT)
             return True
 
         self._buffer = buffer
@@ -295,9 +312,7 @@ class OCRPresenter(Extension):
         if notify_user:
             first = self._current_word()
             first_text = first.text if first is not None else ""
-            presentation_manager.get_manager().present_message(
-                f"OCR mode on. {len(buffer.lines)} lines. {first_text}"
-            )
+            self._say(messages.OCR_MODE_ON % (len(buffer.lines), first_text))
         return True
 
     @dbus_service.command
@@ -309,9 +324,7 @@ class OCRPresenter(Extension):
         del script, event
         if not self._mode_active:
             if notify_user:
-                presentation_manager.get_manager().present_message(
-                    "OCR mode is not active."
-                )
+                self._say(messages.OCR_MODE_NOT_ACTIVE)
             return True
         self._deactivate_mode_keys()
         self._mode_active = False
@@ -320,7 +333,7 @@ class OCRPresenter(Extension):
         self._cursor = None
         self._anchor = None
         if notify_user:
-            presentation_manager.get_manager().present_message("OCR mode off.")
+            self._say(messages.OCR_MODE_OFF)
         return True
 
     # ---- mode key activation -------------------------------------------
@@ -546,7 +559,7 @@ class OCRPresenter(Extension):
         self._nav_clear_anchor()
         if not self._move_next_word():
             if notify_user:
-                self._say("End of OCR text.")
+                self._say(messages.OCR_END_OF_TEXT)
             return True
         if notify_user:
             self._say_current_word()
@@ -565,7 +578,7 @@ class OCRPresenter(Extension):
         self._nav_clear_anchor()
         if not self._move_prev_word():
             if notify_user:
-                self._say("Start of OCR text.")
+                self._say(messages.OCR_START_OF_TEXT)
             return True
         if notify_user:
             self._say_current_word()
@@ -584,7 +597,7 @@ class OCRPresenter(Extension):
         self._nav_clear_anchor()
         if not self._move_next_line():
             if notify_user:
-                self._say("End of OCR text.")
+                self._say(messages.OCR_END_OF_TEXT)
             return True
         if notify_user:
             self._say_current_line()
@@ -603,7 +616,7 @@ class OCRPresenter(Extension):
         self._nav_clear_anchor()
         if not self._move_prev_line():
             if notify_user:
-                self._say("Start of OCR text.")
+                self._say(messages.OCR_START_OF_TEXT)
             return True
         if notify_user:
             self._say_current_line()
@@ -622,7 +635,7 @@ class OCRPresenter(Extension):
         self._nav_clear_anchor()
         if not self._move_next_char():
             if notify_user:
-                self._say("End of OCR text.")
+                self._say(messages.OCR_END_OF_TEXT)
             return True
         if notify_user:
             self._say_current_char()
@@ -641,7 +654,7 @@ class OCRPresenter(Extension):
         self._nav_clear_anchor()
         if not self._move_prev_char():
             if notify_user:
-                self._say("Start of OCR text.")
+                self._say(messages.OCR_START_OF_TEXT)
             return True
         if notify_user:
             self._say_current_char()
@@ -740,7 +753,7 @@ class OCRPresenter(Extension):
         moved = mover()
         if not moved:
             if notify_user:
-                self._say("End of OCR text.")
+                self._say(messages.OCR_END_OF_TEXT)
             return True
         if notify_user:
             self._say(self._selection_summary())
@@ -822,7 +835,7 @@ class OCRPresenter(Extension):
         if notify_user:
             word = self._current_word()
             text = word.text if word else ""
-            self._say(f"Anchor set at {text}.")
+            self._say(messages.OCR_ANCHOR_SET % text)
         return True
 
     @dbus_service.command
@@ -846,12 +859,16 @@ class OCRPresenter(Extension):
             label = "line"
         if not text:
             if notify_user:
-                self._say("Nothing to copy.")
+                self._say(messages.OCR_NOTHING_TO_COPY)
             return True
         clipboard.get_presenter().set_text(text)
         if notify_user:
             preview = text if len(text) <= 60 else text[:50] + "..."
-            self._say(f"Copied {label}: {preview}")
+            template = (
+                messages.OCR_COPIED_LINE if label == "line"
+                else messages.OCR_COPIED_SELECTION
+            )
+            self._say(template % preview)
         return True
 
     # ---- click handlers ------------------------------------------------
@@ -886,7 +903,7 @@ class OCRPresenter(Extension):
         word = self._current_word()
         if word is None:
             if notify_user:
-                self._say("OCR: cursor is not on a word.")
+                self._say(messages.OCR_CURSOR_NOT_ON_WORD)
             return True
 
         try:
@@ -897,7 +914,7 @@ class OCRPresenter(Extension):
             msg = f"OCR PRESENTER: SCREEN get_extents failed at click: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
             if notify_user:
-                self._say("OCR: source window no longer accessible.")
+                self._say(messages.OCR_SOURCE_UNAVAILABLE)
             return True
 
         screen_x = word.screen_x + word.width // 2
@@ -917,10 +934,18 @@ class OCRPresenter(Extension):
         )
         if not ok:
             if notify_user:
-                self._say(f"OCR: {verb.lower()} did not reach the window.")
+                template = (
+                    messages.OCR_RIGHT_CLICK_FAILED if button == "b3c"
+                    else messages.OCR_CLICK_FAILED
+                )
+                self._say(template)
             return True
         if notify_user:
-            self._say(f"{verb}: {word.text}")
+            template = (
+                messages.OCR_RIGHT_CLICKED_ON if button == "b3c"
+                else messages.OCR_CLICKED_ON
+            )
+            self._say(template % word.text)
         return True
 
     # ---- introspection -----------------------------------------------

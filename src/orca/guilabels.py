@@ -682,6 +682,12 @@ NOTIFICATIONS_RECEIVED_TIME = C_("notification presenter", "Received")
 # are associated with presenting notifications.
 KB_GROUP_NOTIFICATIONS = _("Notification presenter")
 
+# Translators: This string is a label for the group of Orca commands which
+# are associated with the OCR (optical character recognition) feature. OCR
+# captures the focused window's pixels, runs them through Tesseract, and
+# lets the user navigate the recognized text as a virtual buffer.
+KB_GROUP_OCR = _("OCR")
+
 # Translators: Orca's preferences can be configured on a per-application basis,
 # allowing users to customize Orca's behavior, keybindings, etc. to work one
 # way in LibreOffice and another way in a chat application. This string is the

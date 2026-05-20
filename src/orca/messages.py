@@ -1694,6 +1694,118 @@ NOTIFICATION_LIST_TOP = C_("notification", "Top")
 # is empty.
 NOTIFICATION_NO_MESSAGES = _("No notification messages")
 
+# Translators: Orca's OCR feature captures the focused window's pixels and
+# runs Tesseract over them. This message is spoken when the user activates
+# OCR but Tesseract is not installed on the system.
+OCR_TESSERACT_NOT_AVAILABLE = _("OCR unavailable: tesseract is not installed.")
+
+# Translators: Orca's OCR feature requires a focused window to capture.
+# This message is spoken when the user activates OCR but no window has
+# the keyboard focus.
+OCR_NO_FOCUSED_WINDOW = _("OCR: no focused window.")
+
+# Translators: Orca's OCR feature reads the focused window's screen
+# position via AT-SPI. This message is spoken when that position cannot
+# be determined (e.g. the window's accessibility implementation does not
+# expose its screen extents).
+OCR_NO_WINDOW_POSITION = _("OCR: cannot determine window position.")
+
+# Translators: Orca's OCR feature requires the focused window to have a
+# non-zero pixel size. This message is spoken when the focused window's
+# reported size is zero or negative.
+OCR_NO_WINDOW_SIZE = _("OCR: focused window has no measurable size.")
+
+# Translators: Orca's OCR feature refuses to capture extremely large
+# windows so that Tesseract does not freeze the screen reader for many
+# seconds. This message is spoken when the focused window exceeds the
+# maximum capture size. The first %d is width in pixels; the second is
+# height.
+OCR_WINDOW_TOO_LARGE = _("OCR: window too large (%d by %d).")
+
+# Translators: Orca's OCR feature speaks a short cue before starting
+# recognition so the user knows the screen reader is busy.
+OCR_RECOGNIZING = _("Recognizing.")
+
+# Translators: Orca's OCR feature reports when the pixel capture stage
+# fails (e.g. the X server refused the screenshot, ImageMagick is not
+# installed). The %s is the technical error message.
+OCR_CAPTURE_FAILED = _("OCR capture failed: %s")
+
+# Translators: Orca's OCR feature reports when Tesseract itself fails to
+# recognize the captured image (e.g. the tesseract subprocess exited
+# nonzero or timed out). The %s is the technical error message.
+OCR_ENGINE_FAILED = _("OCR engine failed: %s")
+
+# Translators: Orca's OCR feature reports when Tesseract returned no
+# words above the confidence threshold for the focused window's pixels.
+OCR_NO_READABLE_TEXT = _("OCR found no readable text.")
+
+# Translators: Orca's OCR feature announces success when entering OCR
+# mode. The %d is the number of recognized lines; the %s is the first
+# word at the OCR cursor's initial position.
+OCR_MODE_ON = _("OCR mode on. %d lines. %s")
+
+# Translators: This message is spoken when the user invokes an OCR mode
+# command while OCR mode is not active.
+OCR_MODE_NOT_ACTIVE = _("OCR mode is not active.")
+
+# Translators: Orca's OCR feature announces when the user exits OCR mode.
+OCR_MODE_OFF = _("OCR mode off.")
+
+# Translators: Spoken when an OCR navigation command moves the OCR cursor
+# past the last word, line, or character of the buffer.
+OCR_END_OF_TEXT = _("End of OCR text.")
+
+# Translators: Spoken when an OCR navigation command tries to move the OCR
+# cursor before the first word, line, or character of the buffer.
+OCR_START_OF_TEXT = _("Start of OCR text.")
+
+# Translators: In OCR mode, the user can mark a selection anchor at the
+# current OCR cursor with one keystroke. This message confirms the anchor
+# was set. The %s is the word at the anchor position.
+OCR_ANCHOR_SET = _("Anchor set at %s.")
+
+# Translators: In OCR mode, the user can copy the active text selection
+# (or the current line if no selection is active) to the clipboard. This
+# message confirms the copy. The %s is a preview of the copied text.
+OCR_COPIED_SELECTION = _("Copied selection: %s")
+
+# Translators: Same as OCR_COPIED_SELECTION but for the no-selection case
+# where the current line is copied instead.
+OCR_COPIED_LINE = _("Copied line: %s")
+
+# Translators: Spoken when the user invokes the copy command in OCR mode
+# but there is no selection and no current-line text to copy (e.g. the
+# OCR cursor is in an empty region of the buffer).
+OCR_NOTHING_TO_COPY = _("Nothing to copy.")
+
+# Translators: In OCR mode, the user invokes a click command (left- or
+# right-click on the word at the OCR cursor). This message is spoken
+# when the OCR cursor is not on a recognized word.
+OCR_CURSOR_NOT_ON_WORD = _("OCR: cursor is not on a word.")
+
+# Translators: In OCR mode, the user can click on the word at the OCR
+# cursor. This message is spoken when the source window that was
+# captured can no longer be reached via AT-SPI (e.g. the window was
+# closed between OCR and click).
+OCR_SOURCE_UNAVAILABLE = _("OCR: source window no longer accessible.")
+
+# Translators: In OCR mode, this confirms a successful left-click on the
+# word at the OCR cursor. The %s is the recognized word.
+OCR_CLICKED_ON = _("Click: %s")
+
+# Translators: In OCR mode, this confirms a successful right-click on
+# the word at the OCR cursor. The %s is the recognized word.
+OCR_RIGHT_CLICKED_ON = _("Right-click: %s")
+
+# Translators: In OCR mode, a synthesized click is delivered via
+# AT-SPI's device API. This message is spoken when that delivery fails
+# (e.g. no device is available).
+OCR_CLICK_FAILED = _("OCR: click did not reach the window.")
+
+# Translators: Same as OCR_CLICK_FAILED but for a right-click attempt.
+OCR_RIGHT_CLICK_FAILED = _("OCR: right-click did not reach the window.")
+
 # Translators: Orca has a setting through which users can control how a number is
 # spoken. The options are digits ("1 2 3") and words ("one hundred and twenty
 # three"). There is an associated Orca command for quickly toggling between the
