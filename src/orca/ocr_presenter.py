@@ -40,7 +40,7 @@ import gi
 gi.require_version("Atspi", "2.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Atspi, Gdk, GLib, GObject, Gtk  # noqa: E402
+from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import (
     ax_device_manager,
@@ -57,7 +57,7 @@ from .ax_object import AXObject
 from .command import Command, KeyboardCommand
 from .extension import Extension
 from . import ocr_capture, ocr_engine
-from .ocr_buffer import OCRBuffer, OCRLine
+from .ocr_buffer import OCRBuffer, OCRWord
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -240,17 +240,23 @@ class OCRPresenter(Extension):
 
 
 class _OCRResultDialog:
-    """GTK dialog displaying one row per recognized line.
+    """GTK dialog displaying the recognized text as a read-only TextView.
 
-    A real TreeView -- so Orca's existing widget-navigation handling
-    speaks each row as the user arrows through it. Closing the dialog
-    returns focus to the originating window.
+    The buffer is plain text -- one line per recognized line, words
+    separated by single spaces -- with the cursor visible and editing
+    disabled. Standard TextView semantics apply: Left/Right move by
+    character, Ctrl+Left/Right by word, Up/Down by line, Home/End to
+    line ends, Ctrl+Home/End to document ends, Shift+arrow to extend
+    the selection, Ctrl+C to copy the selection. Orca reads navigation
+    out of the widget the same way it reads any other accessible
+    text component.
 
-    Phase 2: NumPad / (left-click), NumPad * (right-click), Enter and
-    NumPad Enter (left-click) on the TreeView synthesize a mouse click
-    at the center of the currently-selected line's bounding box in
-    the original source window. The dialog hides itself before the
-    click so the synthesized event lands on the window, not on us.
+    Phase 2.5: NumPad / (left), NumPad * (right), Enter / NumPad Enter
+    (left) synthesize a mouse click in the source window at the screen
+    position of the word currently under the caret -- not the line
+    center. A side table built at construction time maps each
+    text-buffer offset range to the OCRWord that produced it; the
+    click handler looks up the word at the current cursor offset.
     """
 
     def __init__(
@@ -263,7 +269,10 @@ class _OCRResultDialog:
         self._script = script
         self._buffer = buffer
         self._source_window = source_window
-        self._tree: Gtk.TreeView | None = None
+        self._view: Gtk.TextView | None = None
+        self._text_buffer: Gtk.TextBuffer | None = None
+        # (start_offset, end_offset_exclusive, OCRWord) sorted by start.
+        self._word_offsets: list[tuple[int, int, OCRWord]] = []
         self._gui = self._build(buffer)
         self._gui.connect("destroy", destroyed_callback)
 
@@ -286,31 +295,67 @@ class _OCRResultDialog:
         scrolled.set_vexpand(True)
         dialog.get_content_area().add(scrolled)
 
-        tree = Gtk.TreeView()
-        tree.set_hexpand(True)
-        tree.set_vexpand(True)
-        scrolled.add(tree)  # pylint: disable=no-member
+        view = Gtk.TextView()
+        view.set_editable(False)
+        view.set_cursor_visible(True)
+        view.set_monospace(False)
+        view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        view.set_hexpand(True)
+        view.set_vexpand(True)
+        view.set_left_margin(6)
+        view.set_right_margin(6)
+        view.set_top_margin(4)
+        view.set_bottom_margin(4)
+        scrolled.add(view)  # pylint: disable=no-member
 
-        store = Gtk.ListStore(GObject.TYPE_STRING)
-        for line in buffer.lines:
-            store.append([line.text])
-        tree.set_model(store)
+        text_buffer, word_offsets = self._build_text_and_offsets(buffer)
+        view.set_buffer(text_buffer)
+        self._view = view
+        self._text_buffer = text_buffer
+        self._word_offsets = word_offsets
 
-        renderer = Gtk.CellRendererText()
-        column = Gtk.TreeViewColumn("Recognized line", renderer, text=0)
-        tree.append_column(column)
+        # Give the TextView an accessible name so Orca announces the
+        # widget meaningfully when focus lands inside the dialog.
+        accessible = view.get_accessible()
+        if accessible is not None:
+            accessible.set_name("OCR recognized text")
 
-        tree.connect("key-press-event", self._on_tree_keypress)
-        self._tree = tree
+        view.connect("key-press-event", self._on_view_keypress)
 
-        # Land the cursor on the first row so Orca speaks something
-        # immediately when the dialog opens.
-        if len(store) > 0:
-            tree.set_cursor(Gtk.TreePath.new_first(), column, False)
-            tree.grab_focus()
+        # Land the caret at the very start so Orca speaks the first
+        # line immediately when the dialog opens.
+        text_buffer.place_cursor(text_buffer.get_start_iter())
+        view.grab_focus()
 
         dialog.connect("response", self._on_response)
         return dialog
+
+    @staticmethod
+    def _build_text_and_offsets(
+        buffer: OCRBuffer,
+    ) -> tuple[Gtk.TextBuffer, list[tuple[int, int, OCRWord]]]:
+        """Render the buffer to plain text and remember per-word offsets."""
+
+        text_buffer = Gtk.TextBuffer()
+        word_offsets: list[tuple[int, int, OCRWord]] = []
+
+        cursor = 0
+        parts: list[str] = []
+        for line_idx, line in enumerate(buffer.lines):
+            for word_idx, word in enumerate(line.words):
+                start = cursor
+                parts.append(word.text)
+                cursor += len(word.text)
+                word_offsets.append((start, cursor, word))
+                if word_idx < len(line.words) - 1:
+                    parts.append(" ")
+                    cursor += 1
+            if line_idx < len(buffer.lines) - 1:
+                parts.append("\n")
+                cursor += 1
+
+        text_buffer.set_text("".join(parts))
+        return text_buffer, word_offsets
 
     def _on_response(self, dialog: Gtk.Dialog, response: int) -> None:
         if response == Gtk.ResponseType.APPLY:
@@ -321,45 +366,62 @@ class _OCRResultDialog:
             return
         dialog.destroy()
 
-    def _on_tree_keypress(self, _widget: Gtk.TreeView, event: Gdk.EventKey) -> bool:
-        """Intercept the mouse-routing keys; let everything else propagate."""
+    def _on_view_keypress(self, _widget: Gtk.TextView, event: Gdk.EventKey) -> bool:
+        """Intercept the mouse-routing keys; everything else (incl. Ctrl+C) propagates."""
 
         keyval = event.keyval
-        if keyval in (Gdk.KEY_KP_Divide,):
-            return self._click_current_line(button="b1c")
-        if keyval in (Gdk.KEY_KP_Multiply,):
-            return self._click_current_line(button="b3c")
+        if keyval == Gdk.KEY_KP_Divide:
+            return self._click_current_word(button="b1c")
+        if keyval == Gdk.KEY_KP_Multiply:
+            return self._click_current_word(button="b3c")
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-            return self._click_current_line(button="b1c")
+            return self._click_current_word(button="b1c")
         return False
 
-    def _get_selected_line(self) -> OCRLine | None:
-        if self._tree is None:
+    def _current_cursor_offset(self) -> int | None:
+        if self._text_buffer is None:
             return None
-        selection = self._tree.get_selection()
-        model, tree_iter = selection.get_selected()
-        if tree_iter is None:
-            return None
-        path = model.get_path(tree_iter)
-        idx = path.get_indices()[0]
-        if 0 <= idx < len(self._buffer.lines):
-            return self._buffer.lines[idx]
-        return None
+        mark = self._text_buffer.get_insert()
+        iter_ = self._text_buffer.get_iter_at_mark(mark)
+        return iter_.get_offset()
 
-    def _click_current_line(self, button: str) -> bool:
-        """Synthesize a mouse click at the selected line's screen center.
+    def _find_word_at_offset(self, offset: int) -> OCRWord | None:
+        """Return the OCRWord whose range contains offset; else the nearest."""
+
+        if not self._word_offsets:
+            return None
+        # Exact / inclusive containment first. End is exclusive in the
+        # table but we include the boundary so a cursor sitting at the
+        # last character of a word still picks that word.
+        for start, end, word in self._word_offsets:
+            if start <= offset <= end:
+                return word
+        # Cursor is on whitespace, a newline, or past the last word --
+        # fall back to the word whose start is closest.
+        best = min(self._word_offsets, key=lambda we: abs(we[0] - offset))
+        return best[2]
+
+    def _click_current_word(self, button: str) -> bool:
+        """Synthesize a mouse click at the screen center of the word at the caret.
 
         Returns True so GTK stops propagating the keypress (we own it).
         """
 
-        line = self._get_selected_line()
-        if line is None:
-            presentation_manager.get_manager().present_message("OCR: no line selected.")
+        offset = self._current_cursor_offset()
+        if offset is None:
+            presentation_manager.get_manager().present_message("OCR: no caret position.")
             return True
 
-        # Center of the line's bbox, in absolute screen coordinates.
-        screen_x = line.screen_x + line.screen_width // 2
-        screen_y = line.screen_y + line.screen_height // 2
+        word = self._find_word_at_offset(offset)
+        if word is None:
+            presentation_manager.get_manager().present_message(
+                "OCR: no word at the caret position."
+            )
+            return True
+
+        # Center of the word's bbox, in absolute screen coordinates.
+        screen_x = word.screen_x + word.width // 2
+        screen_y = word.screen_y + word.height // 2
 
         # Translate to coordinates relative to the source window (the
         # device API treats coords as relative to the obj it is given).
@@ -379,9 +441,9 @@ class _OCRResultDialog:
 
         tokens = [
             "OCR PRESENTER:", action,
+            f"on word {word.text!r}",
             f"at screen ({screen_x},{screen_y}) =",
-            f"window-rel ({rel_x},{rel_y}) on line:",
-            repr(line.text[:60]),
+            f"window-rel ({rel_x},{rel_y})",
         ]
         debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
 
