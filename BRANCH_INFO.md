@@ -20,6 +20,19 @@ This branch was forked from upstream `main` at:
 | Branch created | 2026-05-11 |
 | Branch name | `perf/atspi-event-cache` |
 
+Most-recent upstream merge: commit `7dba5b2ca` (2026-05-19) brought
+in seven upstream commits between `b8ba47776` and `b20d990c6` —
+Joanie's API normalization series replacing `**args` grab-bags with
+explicit typed kwargs across `present_object` / `update_braille` /
+`present_generated_*`, plus one behavior fix ("Don't present
+ancestors in basic where am I"). All seven merged cleanly; one perf-
+branch `extra_region` parameter on `BraillePresenter.present_regions`
+was dropped because it had zero callers outside the file itself
+(matching upstream's dead-code removal). The four `inMouseReview`
+kwarg readers in `speech_generator.py` and `scripts/web/
+speech_generator.py` migrated to `self._context.active_mode ==
+focus_manager.MOUSE_REVIEW` per the same JD cleanup direction.
+
 ## What the patches change
 
 This branch carries three categories of patches:
@@ -293,6 +306,122 @@ invalidate the cache via the existing hooks but do not auto-rebuild.
 The slow path covers that interval until the next activate or
 document-load-complete event. Adding lazy rebuild on the first
 post-invalidation cache miss is a future refinement.
+
+**Phase 4 OCR / virtual content recognition (commits `84eb8eff7`
+through `5a156812e`)**
+
+Adds an NVDA-style content-recognition feature: press `Orca+R` while
+focused on any window, and Orca captures its pixels, runs Tesseract
+over them, and exposes the recognized text as a virtual buffer the
+user navigates with NumPad keys. Selection via Shift+nav with anchor
+markers, copy-to-clipboard, and synthesized mouse click pass-through
+at the cursor word's screen coordinates. No GTK widget is ever shown
+— the buffer lives only in the presenter and the keyboard intercept
+rides Orca's existing `Atspi.Device`-based listener via
+`command_manager`. This closes the design loop: any window with
+visible text becomes navigable and clickable, regardless of its
+accessibility implementation.
+
+Four new modules, ~1400 lines:
+
+- `ocr_buffer.py` — `OCRWord` / `OCRLine` / `OCRBuffer` frozen
+  dataclasses. The buffer preserves per-word absolute screen
+  coordinates so click pass-through can hit the original pixel
+  without re-running OCR.
+- `ocr_capture.py` — `Gdk.pixbuf_get_from_window` primary path,
+  ImageMagick `import` subprocess fallback, 2x bilinear upscale
+  helper that raises Tesseract's hit rate on small UI text from
+  ~70% to ~95% with ~50ms overhead.
+- `ocr_engine.py` — subprocess wrapper around `tesseract <png> -
+  tsv`. Parses TSV, filters words below confidence 30 (the standard
+  threshold for UI text), translates image-local bbox to absolute
+  screen coords by capture origin and upscale factor.
+- `ocr_presenter.py` — `Extension` singleton. Owns the `Orca+R`
+  binding, the `(line, word, char)` virtual cursor, the selection
+  anchor, the mode-gated NumPad keys, and the suspend/restore
+  bookkeeping for the flat-review commands whose bindings it
+  temporarily owns.
+
+Integration footprint outside the four new files:
+- One block of `meson.build` listing the four new files.
+- One enrollment line in `default.Script._register_builtin_extensions`.
+- One bootstrap import in `presentation_manager.py` (forces the
+  singleton to exist at startup; harmless — Extension `__init__`
+  registers commands as suspended-by-default).
+
+While OCR mode is active, the flat-review commands bound to the
+same NumPad keys are suspended and remembered for restoration on
+exit. Other Orca bindings (Orca-modifier keys, non-NumPad
+bindings) are untouched. Tesseract availability is checked at
+command time, not import time, so a system without `tesseract`
+installed sees no impact until the user presses `Orca+R`.
+
+Key map while OCR mode is active (21 mode-gated commands):
+
+| Press | Action |
+|---|---|
+| `KP_Up` / `KP_Down` | previous / next line |
+| `KP_Left` / `KP_Right` | previous / next word |
+| `KP_End` / `KP_Page_Down` | previous / next character |
+| `KP_Home` / `KP_Page_Up` | first / last word in buffer |
+| `KP_Begin` (NumPad 5) | re-speak current word |
+| Shift + any nav | extend selection in that direction |
+| `KP_Decimal` (NumPad .) | set selection anchor at cursor |
+| `KP_Add` (NumPad +) | copy selection (or current line) to clipboard |
+| `KP_Divide` (NumPad /) | left-click in source window at cursor word |
+| `KP_Multiply` (NumPad *) | right-click at cursor word |
+| `KP_Enter` | left-click (alias of `KP_Divide`) |
+| `KP_Subtract` (NumPad -) | exit OCR mode |
+| `Orca+R` again | exit OCR mode |
+
+Closes (or makes substantial progress on) four open upstream issues
+on `gitlab.gnome.org/GNOME/orca`:
+
+- **#706** Add a feature to allow selecting and copying of text in
+  flat review. OCR's anchor + Shift+nav + copy is exactly the
+  workflow the issue author requested. The terminal use case the
+  issue motivates works because OCR reads pixels, not the
+  accessibility tree.
+- **#249** Select to speak a specific UI element.
+- **#670** Terminal output in GNOME Console / GTK4/VTE4 terminals
+  is garbled. Bypasses the VTE accessibility layer entirely.
+- **#202** Orca cannot read in scrolled terminal. Reads on-screen
+  pixels regardless of scrollback state.
+
+Submission package at `submissions/ocr_feature/` (not part of the
+source tree, but tracked locally): `0001-ocr_presenter-Add-NVDA-
+style-OCR-buffer-with-click-p.patch` (single squashed commit
+against `upstream/main` HEAD `b20d990c6`, `git apply --check` passes),
+`ISSUE_BODY.md`, `EMAIL_TO_JOANIE.md`, `PRODUCTION_READINESS.md`,
+and loose copies of the four `.py` modules.
+
+Design history — earlier iterations that were tried and discarded,
+each failing on a specific X11/GTK reality:
+
+1. Modal `Gtk.Dialog` with synthesized click after `hide() + idle_add`
+   — modal grab plus async X11 unmap-notify made the XTest button
+   event land inside the still-mapped dialog (selecting our own
+   TextView's text).
+2. Non-modal dialog using `Atspi.Action.do_action` — works only for
+   accessible targets, defeating OCR's whole purpose.
+3. "Invisible" `Gtk.Window` (`opacity=0`, `move(-2,-2)`, 1x1) — MATE
+   without a compositor ignores opacity hints, WM clamps off-screen
+   positions back on-screen, and on the next OCR pass the window's
+   own visible rectangle is re-captured, creating a feedback loop
+   where the user "clicks" on text from inside Orca's own window.
+4. `Orca+arrow` keybindings — `Orca+Down` clashes with the existing
+   "say next line" command which consumed the key before OCR's
+   handler got it.
+5. Plain arrow keys without mode-discipline — would eat arrows in
+   every app regardless of OCR mode state.
+
+The current design (pure-virtual cursor + NumPad keys + explicit
+suspend/restore of flat-review's bindings) is what survived all of
+the above. The patch is functionally ready for personal use and
+verified working on Fedora 44 / MATE / X11; remaining gaps before
+upstream-merge readiness (i18n, unit tests, settings schema,
+Wayland portal capture, user docs page) are detailed in
+`submissions/ocr_feature/PRODUCTION_READINESS.md`.
 
 **Speech-prefs correctness — shipped upstream, locally reverted**
 

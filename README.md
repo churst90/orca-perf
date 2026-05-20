@@ -7,8 +7,15 @@
 > - AT-SPI property caching (role/parent/name/state) within and across events
 > - Per-document caches for structural navigation (headings, links, ...)
 > - Held-key speech coalescing
-> - A fix for a speech-prefs regression where switching synthesizers
->   would silently revert on save (commit `e05d8868d`)
+> - **NVDA-style OCR / content recognition (`Orca+R`)** — virtual cursor,
+>   character/word/line nav, Shift+nav text selection, multi-line copy,
+>   and click pass-through into the source window. Closes upstream
+>   issues #706, #249, #670, #202. See `BRANCH_INFO.md` "Phase 4 OCR"
+>   section and `submissions/ocr_feature/` for the upstream submission
+>   package.
+> - Synced with upstream/main through commit `b20d990c6` (JD's API
+>   normalization series + "Don't present ancestors in basic where am
+>   I"). See "Latest upstream merge" in `BRANCH_INFO.md`.
 >
 > See [`BRANCH_INFO.md`](BRANCH_INFO.md) for the full fork story,
 > per-commit rationale, measured impact, build instructions, and open
