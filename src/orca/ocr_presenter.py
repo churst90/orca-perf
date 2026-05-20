@@ -196,6 +196,11 @@ class OCRPresenter(Extension):
         self._anchor: Position | None = None
         self._mode_active: bool = False
         self._externally_suspended: list[Command] = []
+        # Async OCR bookkeeping. _pending_pid is the live Tesseract
+        # child PID while a recognition is in flight; _pending_context
+        # carries the per-request state the completion callback needs.
+        self._pending_pid: int | None = None
+        self._pending_context: dict | None = None
         super().__init__()
 
     # ---- command registration ------------------------------------------
@@ -280,6 +285,15 @@ class OCRPresenter(Extension):
 
         window_name = AXObject.get_name(window) or ""
 
+        # If a previous OCR is still running, refuse the new request.
+        # Tesseract typically takes 0.3-2s; the user should hear the
+        # busy message rather than have two recognitions overlap and
+        # produce inconsistent state.
+        if self._pending_pid is not None:
+            if notify_user:
+                self._say(messages.OCR_BUSY)
+            return True
+
         if notify_user:
             self._say(messages.OCR_RECOGNIZING)
 
@@ -287,53 +301,98 @@ class OCRPresenter(Extension):
         lang = self.get_ocr_lang()
         min_confidence = self.get_confidence_threshold()
 
-        start = time.time()
         try:
             png = ocr_capture.capture_region(x, y, width, height)
             png = ocr_capture.upscale_png(png, upscale_factor)
-            words = ocr_engine.recognize(
-                png,
-                capture_x=x,
-                capture_y=y,
-                upscale_factor=upscale_factor,
-                lang=lang,
-                min_confidence=min_confidence,
-            )
         except ocr_capture.OCRCaptureError as error:
             msg = f"OCR PRESENTER: Capture failed: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
             if notify_user:
                 self._say(messages.OCR_CAPTURE_FAILED % error)
             return True
-        except ocr_engine.OCREngineError as error:
-            msg = f"OCR PRESENTER: Recognition failed: {error}"
+
+        # Stash everything the completion callback will need. The
+        # callback runs after Tesseract exits, on the GLib main loop;
+        # by then the locals from this scope are gone.
+        self._pending_context = {
+            "window": window,
+            "window_name": window_name,
+            "x": x, "y": y,
+            "width": width, "height": height,
+            "notify_user": notify_user,
+            "start": time.time(),
+        }
+        pid = ocr_engine.recognize_async(
+            png,
+            capture_x=x,
+            capture_y=y,
+            upscale_factor=upscale_factor,
+            lang=lang,
+            min_confidence=min_confidence,
+            on_done=self._on_recognize_done,
+        )
+        if pid is None:
+            # Synchronous failure already reported via on_done.
+            self._pending_context = None
+            return True
+        self._pending_pid = pid
+        return True
+
+    def _on_recognize_done(
+        self,
+        words: list[OCRWord] | None,
+        error: ocr_engine.OCREngineError | None,
+    ) -> None:
+        """Completion callback for ocr_engine.recognize_async.
+
+        Runs on the GLib main loop after Tesseract exits. Picks up the
+        per-request state from self._pending_context and finishes
+        entering OCR mode (or speaks the error if Tesseract failed).
+        """
+
+        ctx = self._pending_context
+        self._pending_context = None
+        self._pending_pid = None
+
+        if ctx is None:
+            msg = "OCR PRESENTER: recognize_async fired without pending context"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return
+
+        notify_user = ctx["notify_user"]
+
+        if error is not None:
+            msg = f"OCR PRESENTER: async recognition failed: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
             if notify_user:
                 self._say(messages.OCR_ENGINE_FAILED % error)
-            return True
+            return
 
-        elapsed = time.time() - start
+        elapsed = time.time() - ctx["start"]
+        word_list = words or []
         buffer = OCRBuffer.from_words(
-            words, capture_x=x, capture_y=y,
-            capture_width=width, capture_height=height,
-            source_window_name=window_name,
+            word_list,
+            capture_x=ctx["x"], capture_y=ctx["y"],
+            capture_width=ctx["width"], capture_height=ctx["height"],
+            source_window_name=ctx["window_name"],
         )
 
         tokens = [
             "OCR PRESENTER: Recognized",
-            f"{len(words)} words / {len(buffer.lines)} lines",
+            f"{len(word_list)} words / {len(buffer.lines)} lines",
             f"in {elapsed:.2f}s from",
-            f"'{window_name}' ({width}x{height} at +{x}+{y})",
+            f"'{ctx['window_name']}' "
+            f"({ctx['width']}x{ctx['height']} at +{ctx['x']}+{ctx['y']})",
         ]
         debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
 
         if buffer.is_empty:
             if notify_user:
                 self._say(messages.OCR_NO_READABLE_TEXT)
-            return True
+            return
 
         self._buffer = buffer
-        self._source_window = window
+        self._source_window = ctx["window"]
         self._cursor = (0, 0, 0)
         self._anchor = None
         self._activate_mode_keys()
@@ -343,7 +402,6 @@ class OCRPresenter(Extension):
             first = self._current_word()
             first_text = first.text if first is not None else ""
             self._say(messages.OCR_MODE_ON % (len(buffer.lines), first_text))
-        return True
 
     @dbus_service.command
     def exit_ocr_mode(

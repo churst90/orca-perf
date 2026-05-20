@@ -1740,6 +1740,12 @@ OCR_ENGINE_FAILED = _("OCR engine failed: %s")
 # words above the confidence threshold for the focused window's pixels.
 OCR_NO_READABLE_TEXT = _("OCR found no readable text.")
 
+# Translators: Orca's OCR feature runs Tesseract asynchronously so the
+# screen reader remains responsive. This message is spoken when the user
+# presses the OCR keybinding while a previous recognition is still in
+# progress.
+OCR_BUSY = _("OCR is still recognizing the previous window. Please wait.")
+
 # Translators: Orca's OCR feature announces success when entering OCR
 # mode. The %d is the number of recognized lines; the %s is the first
 # word at the OCR cursor's initial position.

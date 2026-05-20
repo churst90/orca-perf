@@ -31,10 +31,14 @@ off the GLib main thread or display a progress cue.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Callable
+
+from gi.repository import GLib
 
 from . import debug
 from .ocr_buffer import OCRWord
@@ -151,6 +155,105 @@ def recognize(
         upscale_factor=upscale_factor,
         min_confidence=min_confidence,
     )
+
+
+# (words, error) -- exactly one of the two is None when the callback fires.
+RecognizeCallback = Callable[["list[OCRWord] | None", "OCREngineError | None"], None]
+
+
+def recognize_async(
+    png_bytes: bytes,
+    capture_x: int,
+    capture_y: int,
+    on_done: RecognizeCallback,
+    upscale_factor: float = 1.0,
+    lang: str = "eng",
+    min_confidence: int = _DEFAULT_MIN_CONFIDENCE,
+) -> int | None:
+    """Non-blocking variant of recognize().
+
+    Starts Tesseract as a child process whose stdout is redirected to a
+    temp file (so the GLib main loop never has to drain a pipe), then
+    uses GLib.child_watch_add to be notified when the child exits. When
+    the child exits, the temp file is read, the TSV is parsed, and
+    on_done is invoked with either (words, None) on success or (None,
+    OCREngineError) on failure.
+
+    Returns the child PID on successful spawn (so callers can track
+    the active request), or None if spawn failed synchronously (in
+    which case on_done has already been invoked with the error).
+
+    The callback always runs on the GLib main loop, so callers don't
+    need to worry about thread-safety in their handlers.
+    """
+
+    if not is_available():
+        on_done(
+            None,
+            OCREngineError(
+                "tesseract binary not found on PATH. Install the 'tesseract' "
+                "package and at least one language data pack."
+            ),
+        )
+        return None
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as png_tmp:
+        png_path = Path(png_tmp.name)
+        png_path.write_bytes(png_bytes)
+
+    with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False) as tsv_tmp:
+        tsv_path = Path(tsv_tmp.name)
+    tsv_fd = os.open(tsv_path, os.O_WRONLY | os.O_TRUNC)
+
+    try:
+        proc = subprocess.Popen(
+            ["tesseract", str(png_path), "-", "-l", lang, "tsv"],
+            stdout=tsv_fd,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        os.close(tsv_fd)
+        png_path.unlink(missing_ok=True)
+        tsv_path.unlink(missing_ok=True)
+        on_done(None, OCREngineError(f"failed to start tesseract: {error}"))
+        return None
+    finally:
+        # The subprocess inherits a dup of tsv_fd; the parent's copy
+        # must be closed so the OS sees EOF when the child exits.
+        try:
+            os.close(tsv_fd)
+        except OSError:
+            pass
+
+    def on_child_done(pid: int, status: int) -> None:
+        png_path.unlink(missing_ok=True)
+        try:
+            if status != 0:
+                tsv_path.unlink(missing_ok=True)
+                on_done(
+                    None,
+                    OCREngineError(f"tesseract exited with status {status}"),
+                )
+                return
+            try:
+                tsv = tsv_path.read_text(errors="replace")
+            finally:
+                tsv_path.unlink(missing_ok=True)
+            words = _parse_tsv(
+                tsv,
+                capture_x=capture_x,
+                capture_y=capture_y,
+                upscale_factor=upscale_factor,
+                min_confidence=min_confidence,
+            )
+            on_done(words, None)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = f"OCR ENGINE: post-spawn handler raised: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            on_done(None, OCREngineError(str(error)))
+
+    GLib.child_watch_add(GLib.PRIORITY_DEFAULT, proc.pid, on_child_done)
+    return proc.pid
 
 
 def _parse_tsv(
