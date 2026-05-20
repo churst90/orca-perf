@@ -143,14 +143,19 @@ class OCRPresenter(Extension):
             ),
         ]
         # Mode-gated commands. Suspended-by-default; unsuspended only
-        # while OCR mode is active.
+        # while OCR mode is active. The command name is qualified by
+        # keysym so two keys that share a handler (KP_Divide and
+        # KP_Enter both call left_click_current) produce two
+        # distinct commands. Without this qualifier the second
+        # registration clobbered the first via the "Unexpected
+        # re-registration" path in command_manager.add_command.
         for keysym, attr in self._MODE_KEYS.items():
             handler = getattr(self, attr)
             cmd = KeyboardCommand(
-                self._ocr_command_name(attr),
+                self._ocr_command_name(attr, keysym),
                 handler,
                 self.GROUP_LABEL,
-                f"OCR: {attr.replace('_', ' ')}",
+                f"OCR: {attr.replace('_', ' ')} ({keysym})",
                 desktop_keybinding=keybindings.KeyBinding(
                     keysym, keybindings.NO_MODIFIER_MASK,
                 ),
@@ -163,8 +168,8 @@ class OCRPresenter(Extension):
         return commands
 
     @staticmethod
-    def _ocr_command_name(handler_attr: str) -> str:
-        return f"ocr_{handler_attr}Handler"
+    def _ocr_command_name(handler_attr: str, keysym: str) -> str:
+        return f"ocr_{keysym}_{handler_attr}Handler"
 
     # ---- mode toggle ---------------------------------------------------
 
@@ -320,10 +325,12 @@ class OCRPresenter(Extension):
         manager = command_manager.get_manager()
         target_keysyms = set(self._MODE_KEYS.keys())
         ocr_command_names = {
-            self._ocr_command_name(attr) for attr in self._MODE_KEYS.values()
+            self._ocr_command_name(attr, keysym)
+            for keysym, attr in self._MODE_KEYS.items()
         }
 
         self._externally_suspended.clear()
+        suspended_count = 0
         # Walk every registered keyboard command. Pylint-private access
         # here is deliberate: command_manager doesn't expose an iter
         # API, and we need to identify external commands by binding.
@@ -342,23 +349,45 @@ class OCRPresenter(Extension):
                 continue
             cmd.set_suspended(True)
             self._externally_suspended.append(cmd)
+            suspended_count += 1
             tokens = [
                 "OCR PRESENTER: Suspended", cmd.get_name(),
-                f"on {binding.keysymstring}",
+                f"on {binding.keysymstring} (click_count={binding.click_count})",
             ]
             debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
 
-        for attr in self._MODE_KEYS.values():
-            cmd = manager.get_command(self._ocr_command_name(attr))
-            if cmd is not None:
-                cmd.set_suspended(False)
+        unsuspended_count = 0
+        for keysym, attr in self._MODE_KEYS.items():
+            cmd = manager.get_command(self._ocr_command_name(attr, keysym))
+            if cmd is None:
+                tokens = [
+                    "OCR PRESENTER: MISSING command",
+                    self._ocr_command_name(attr, keysym),
+                    "(not registered? bootstrap order?)",
+                ]
+                debug.print_message(debug.LEVEL_WARNING, " ".join(tokens), True)
+                continue
+            cmd.set_suspended(False)
+            unsuspended_count += 1
+            tokens = [
+                "OCR PRESENTER: Activated", cmd.get_name(),
+                f"on {keysym}",
+            ]
+            debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
+
+        tokens = [
+            "OCR PRESENTER: _activate_mode_keys done.",
+            f"Suspended {suspended_count} external,",
+            f"activated {unsuspended_count} OCR.",
+        ]
+        debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
 
     def _deactivate_mode_keys(self) -> None:
         """Re-suspend ours, unsuspend the ones we suspended on entry."""
 
         manager = command_manager.get_manager()
-        for attr in self._MODE_KEYS.values():
-            cmd = manager.get_command(self._ocr_command_name(attr))
+        for keysym, attr in self._MODE_KEYS.items():
+            cmd = manager.get_command(self._ocr_command_name(attr, keysym))
             if cmd is not None:
                 cmd.set_suspended(True)
         for cmd in self._externally_suspended:
@@ -380,6 +409,17 @@ class OCRPresenter(Extension):
             return None
         return line.words[wi]
 
+    def _trace(self, handler: str) -> None:
+        """Emit a single debug line so any captured log shows handler dispatch."""
+
+        tokens = [
+            "OCR PRESENTER: handler", handler, "called.",
+            f"mode_active={self._mode_active}",
+            f"cursor={self._cursor}",
+            f"buffer={'set' if self._buffer is not None else 'none'}",
+        ]
+        debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
+
     # ---- navigation commands -------------------------------------------
 
     @dbus_service.command
@@ -389,6 +429,7 @@ class OCRPresenter(Extension):
         notify_user: bool = True,
     ) -> bool:
         del script, event
+        self._trace("go_next_word")
         if not self._mode_active or self._buffer is None or self._cursor is None:
             return False  # let other commands handle the key
         li, wi = self._cursor
@@ -414,6 +455,7 @@ class OCRPresenter(Extension):
         notify_user: bool = True,
     ) -> bool:
         del script, event
+        self._trace("nav/cursor")
         if not self._mode_active or self._buffer is None or self._cursor is None:
             return False
         li, wi = self._cursor
@@ -439,6 +481,7 @@ class OCRPresenter(Extension):
         notify_user: bool = True,
     ) -> bool:
         del script, event
+        self._trace("nav/cursor")
         if not self._mode_active or self._buffer is None or self._cursor is None:
             return False
         li, _ = self._cursor
@@ -460,6 +503,7 @@ class OCRPresenter(Extension):
         notify_user: bool = True,
     ) -> bool:
         del script, event
+        self._trace("nav/cursor")
         if not self._mode_active or self._buffer is None or self._cursor is None:
             return False
         li, _ = self._cursor
@@ -481,6 +525,7 @@ class OCRPresenter(Extension):
         notify_user: bool = True,
     ) -> bool:
         del script, event
+        self._trace("nav-no-cursor-check")
         if not self._mode_active or self._buffer is None:
             return False
         self._cursor = (0, 0)
@@ -497,6 +542,7 @@ class OCRPresenter(Extension):
         notify_user: bool = True,
     ) -> bool:
         del script, event
+        self._trace("nav-no-cursor-check")
         if not self._mode_active or self._buffer is None:
             return False
         last_line = len(self._buffer.lines) - 1
@@ -515,6 +561,7 @@ class OCRPresenter(Extension):
         notify_user: bool = True,
     ) -> bool:
         del script, event
+        self._trace("nav-no-cursor-check")
         if not self._mode_active or self._buffer is None:
             return False
         word = self._current_word()
@@ -533,6 +580,7 @@ class OCRPresenter(Extension):
         """Copy the OCR text of the current line to the system clipboard."""
 
         del script, event
+        self._trace("nav/cursor")
         if not self._mode_active or self._buffer is None or self._cursor is None:
             return False
         li, _ = self._cursor
@@ -571,6 +619,7 @@ class OCRPresenter(Extension):
         return self._click("b3c", "Right-click", notify_user)
 
     def _click(self, button: str, verb: str, notify_user: bool) -> bool:
+        self._trace(f"_click({verb})")
         if self._buffer is None or self._cursor is None or self._source_window is None:
             return True
         word = self._current_word()
