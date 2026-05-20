@@ -51,6 +51,12 @@ class Extension:
         self._disabled = True
         msg = f"EXTENSION: {self.module_name} has been disabled."
         debug.print_message(debug.LEVEL_INFO, msg, True)
+        # Safety: if this extension currently holds modal mode,
+        # release it before deregistering commands. Otherwise the
+        # external commands we suspended would stay suspended for
+        # the rest of the Orca session.
+        if self.controller.get_modal_owner() is self:
+            self.controller.exit_modal_mode(self)
         self.controller.deregister_module_commands(self.module_name)
 
     def set_up_commands(self) -> None:

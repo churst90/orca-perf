@@ -48,22 +48,13 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Atspi, Gdk, GdkPixbuf, Gio, GLib  # noqa: E402
 
-# Focused-window, clipboard, and synthesized-mouse-event access all
-# go through the controller, which gained the relevant wrappers in
-# perf-branch commit 766a2e96a (see submissions/ext_api_gaps/
-# 02-controller-active-window.md, 03-controller-clipboard.md, and
-# 04-controller-mouse-event.md for the upstream issue filings).
-
-# GAP-4: modal key discipline. To take temporary ownership of
-# NumPad keys while OCR mode is active without conflicting with
-# flat-review, we still have to reach into command_manager and
-# call set_suspended(True/False) on individual commands. No
-# controller "enter modal mode" API exists yet.
-# Proposed: controller.enter_modal_mode(keys) /
-# controller.exit_modal_mode() -- see issue
-# submissions/ext_api_gaps/05-modal-key-discipline.md.
-from orca import command_manager  # noqa: E402
-
+# All Orca-internal access goes through the controller. The four
+# methods we use (get_active_window, get_active_window_screen_rect,
+# set_clipboard_text, synthesize_mouse_event) landed in perf commit
+# 766a2e96a. The modal-mode API (enter_modal_mode, exit_modal_mode,
+# is_in_modal_mode, get_modal_owner) landed in a follow-up commit.
+# See submissions/ext_api_gaps/ for the corresponding upstream
+# issue bodies.
 from orca import debug, keybindings  # noqa: E402
 from orca.command import Command, KeyboardCommand  # noqa: E402
 from orca.extension import Extension  # noqa: E402
@@ -568,7 +559,6 @@ class OcrExtension(Extension):
         self._cursor: _Position | None = None
         self._anchor: _Position | None = None
         self._mode_active: bool = False
-        self._externally_suspended: list = []
         self._pending_pid: int | None = None
         self._pending_context: dict | None = None
         super().__init__()
@@ -744,45 +734,25 @@ class OcrExtension(Extension):
         self._say("OCR mode off.")
         return True
 
-    # ---- modal key activation -- GAP-4 in action -------------------
+    # ---- modal key activation --------------------------------------
 
     def _activate_mode_keys(self) -> None:
-        # GAP-4: reach into command_manager and individually suspend
-        # every command bound to a NumPad key we want, then
-        # unsuspend our own. There is no controller API for "I
-        # want to own these keys while in my mode."
-        manager = command_manager.get_manager()
-        target_pairs = {(k, m) for k, m, _ in self._MODE_KEYS}
-        ocr_command_names = {
-            self._ocr_command_name(k, m, a) for k, m, a in self._MODE_KEYS
-        }
-        self._externally_suspended.clear()
-        for cmd in manager.get_all_keyboard_commands():
-            if cmd.get_name() in ocr_command_names:
-                continue
-            binding = cmd.get_keybinding()
-            if binding is None:
-                continue
-            if (binding.keysymstring, binding.modifiers) not in target_pairs:
-                continue
-            if cmd.is_suspended():
-                continue
-            cmd.set_suspended(True)
-            self._externally_suspended.append(cmd)
-        for keysym, mod, attr in self._MODE_KEYS:
-            cmd = manager.get_command(self._ocr_command_name(keysym, mod, attr))
-            if cmd is not None:
-                cmd.set_suspended(False)
+        """Take ownership of our NumPad keys via the controller API.
+
+        Delegates to controller.enter_modal_mode(self, keys). The
+        controller identifies our own commands via GROUP_LABEL match
+        (every OCR command shares the "OCR" group label), suspends
+        external commands on the same keysym+modifier pairs, and
+        remembers them for restoration on exit.
+        """
+
+        target_pairs = [(k, m) for k, m, _ in self._MODE_KEYS]
+        self.controller.enter_modal_mode(self, target_pairs)
 
     def _deactivate_mode_keys(self) -> None:
-        manager = command_manager.get_manager()
-        for keysym, mod, attr in self._MODE_KEYS:
-            cmd = manager.get_command(self._ocr_command_name(keysym, mod, attr))
-            if cmd is not None:
-                cmd.set_suspended(True)
-        for cmd in self._externally_suspended:
-            cmd.set_suspended(False)
-        self._externally_suspended.clear()
+        """Release modal-mode ownership."""
+
+        self.controller.exit_modal_mode(self)
 
     # ---- cursor helpers --------------------------------------------
 

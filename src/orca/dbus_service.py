@@ -676,6 +676,15 @@ class OrcaRemoteController:
         self._bus: SessionMessageBus | None = None
         self._registered: dict[str, _ModuleRegistration] = {}
         self._pending_registrations: dict[str, object] = {}
+        # Modal-mode state. One extension may take temporary ownership
+        # of a set of keys; while it's in modal mode, other commands
+        # on those keys are suspended and remembered for restoration
+        # at exit. Only one extension can be modal at a time; a second
+        # enter_modal_mode call while another extension is modal is
+        # refused (returns False).
+        self._modal_extension: object | None = None
+        self._modal_suspended_commands: list = []
+        self._modal_keys: set[tuple[str, int]] = set()
 
     def start(self) -> bool:
         """Starts the D-Bus service."""
@@ -945,6 +954,153 @@ class OrcaRemoteController:
         "right-release":  "b3r",
         "move":           "abs",
     }
+
+    # ---- extension-facing helpers for modal key discipline -----------
+
+    def enter_modal_mode(
+        self,
+        extension: object,
+        keys: "list[tuple[str, int]]",
+    ) -> bool:
+        """Take temporary ownership of the listed (keysym, modifier) pairs.
+
+        While `extension` is in modal mode, any *other* command bound
+        to one of these keys is suspended; `extension`'s own commands
+        on these keys are unsuspended. Both states are reversed by
+        exit_modal_mode (or automatically by Extension.disable() if
+        the modal-owning extension is disabled).
+
+        Only one extension can be modal at a time. A second
+        enter_modal_mode call while another extension is modal returns
+        False and does nothing.
+
+        Identification of "extension's own commands" is by GROUP_LABEL
+        match: a command is considered owned by `extension` iff
+        cmd.get_group_label() == extension.GROUP_LABEL. The
+        user-extensions docs already say each extension must have a
+        unique GROUP_LABEL.
+
+        Returns True on success.
+        """
+
+        if self._modal_extension is not None:
+            current = getattr(self._modal_extension, "module_name", "?")
+            requested = getattr(extension, "module_name", "?")
+            msg = (
+                f"REMOTE CONTROLLER: refusing enter_modal_mode for "
+                f"'{requested}'; '{current}' is already modal"
+            )
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return False
+
+        from . import command_manager  # pylint: disable=import-outside-toplevel
+        manager = command_manager.get_manager()
+        key_set = set(keys)
+        ext_label = getattr(extension, "GROUP_LABEL", None)
+
+        # Suspend external commands on the target keys; remember them
+        # so exit_modal_mode can restore exactly the same set even if
+        # other suspensions are toggled in between.
+        suspended: list = []
+        own_commands: list = []
+        for cmd in manager.get_all_keyboard_commands():
+            binding = cmd.get_keybinding()
+            if binding is None:
+                continue
+            if (binding.keysymstring, binding.modifiers) not in key_set:
+                continue
+            if cmd.get_group_label() == ext_label:
+                own_commands.append(cmd)
+                continue
+            if cmd.is_suspended():
+                continue
+            cmd.set_suspended(True)
+            suspended.append(cmd)
+
+        # Activate the extension's own commands on these keys.
+        for cmd in own_commands:
+            cmd.set_suspended(False)
+
+        self._modal_extension = extension
+        self._modal_suspended_commands = suspended
+        self._modal_keys = key_set
+
+        msg = (
+            f"REMOTE CONTROLLER: enter_modal_mode for "
+            f"'{getattr(extension, 'module_name', '?')}': "
+            f"suspended {len(suspended)} external command(s), "
+            f"activated {len(own_commands)} extension command(s) "
+            f"on {len(key_set)} key combination(s)"
+        )
+        debug.print_message(debug.LEVEL_INFO, msg, True)
+        return True
+
+    def exit_modal_mode(self, extension: object) -> bool:
+        """Reverse enter_modal_mode.
+
+        Re-suspends the extension's own commands on the modal keys
+        and unsuspends the external commands that were suspended on
+        entry. Returns True if we were modal and `extension` was the
+        owner; False otherwise (e.g. called by a non-owner, or no
+        modal mode is active).
+        """
+
+        if self._modal_extension is None:
+            return False
+        if self._modal_extension is not extension:
+            current = getattr(self._modal_extension, "module_name", "?")
+            caller = getattr(extension, "module_name", "?")
+            msg = (
+                f"REMOTE CONTROLLER: exit_modal_mode called by "
+                f"'{caller}' but modal owner is '{current}'"
+            )
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return False
+
+        from . import command_manager  # pylint: disable=import-outside-toplevel
+        manager = command_manager.get_manager()
+        ext_label = getattr(extension, "GROUP_LABEL", None)
+
+        # Re-suspend extension's own commands on the modal keys.
+        for cmd in manager.get_all_keyboard_commands():
+            if cmd.get_group_label() != ext_label:
+                continue
+            binding = cmd.get_keybinding()
+            if binding is None:
+                continue
+            if (binding.keysymstring, binding.modifiers) not in self._modal_keys:
+                continue
+            cmd.set_suspended(True)
+
+        # Restore the previously-suspended external commands.
+        for cmd in self._modal_suspended_commands:
+            cmd.set_suspended(False)
+
+        msg = (
+            f"REMOTE CONTROLLER: exit_modal_mode for "
+            f"'{getattr(extension, 'module_name', '?')}': "
+            f"restored {len(self._modal_suspended_commands)} external command(s)"
+        )
+        debug.print_message(debug.LEVEL_INFO, msg, True)
+
+        self._modal_extension = None
+        self._modal_suspended_commands = []
+        self._modal_keys = set()
+        return True
+
+    def is_in_modal_mode(self) -> bool:
+        """True iff any extension currently holds modal mode."""
+
+        return self._modal_extension is not None
+
+    def get_modal_owner(self) -> "object | None":
+        """Returns the Extension instance currently in modal mode, or None.
+
+        Useful for Extension.disable() to know whether it needs to
+        force-exit modal mode before deregistering its commands.
+        """
+
+        return self._modal_extension
 
     def synthesize_mouse_event(
         self, screen_x: int, screen_y: int, button: str = "left",
