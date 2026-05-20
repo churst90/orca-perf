@@ -189,7 +189,7 @@ class KeybindingsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
         )
         get_manager().set_keyboard_layout_is_desktop(layout == "desktop")
         self._original_keyboard_layout_is_desktop = get_manager().get_keyboard_layout_is_desktop()
-        get_manager().apply_user_overrides()
+        # set_keyboard_layout_is_desktop() already applied the overrides and updated the grabs.
         self._populate_keybindings()
         self._modified_keybindings.clear()
         self._has_unsaved_changes = False
@@ -985,7 +985,7 @@ class KeybindingsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
                     self._get_selected_modifier_keys(),
                 )
 
-        get_manager().apply_user_overrides()
+        # load_keyboard_layout() already applied the overrides and updated the grabs.
         self._populate_keybindings()
         self._has_unsaved_changes = True
 
@@ -1588,6 +1588,8 @@ class CommandManager:  # pylint: disable=too-many-instance-attributes
     def are_groups_exclusive(self, group_a: str, group_b: str) -> bool:
         """Returns True if the two groups are mutually exclusive."""
 
+        if group_a == group_b:
+            return False
         return any(
             group_a in group_set and group_b in group_set for group_set in self._exclusive_groups
         )

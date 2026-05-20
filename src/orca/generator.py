@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -37,7 +37,7 @@ import gi
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi
 
-from . import braille, debug, messages, object_properties
+from . import braille, debug, focus_manager, messages, object_properties
 from .ax_hypertext import AXHypertext
 from .ax_object import AXObject
 from .ax_text import AXText
@@ -59,11 +59,32 @@ class GeneratorMode(Enum):
     SOUND = "sound"
 
 
-class WhereAmI(Enum):
-    """Where-am-I detail level."""
+class PresentationReason(Enum):
+    """Why a presentation is being generated, beyond what active_mode captures."""
 
-    BASIC = "basic"
-    DETAILED = "detailed"
+    FOCUS_CHANGE = "focus-change"
+    STATE_CHANGE = "state-change"
+    PROGRESS_BAR_UPDATE = "progress-bar-update"
+    WHERE_AM_I_BASIC = "where-am-i-basic"
+    WHERE_AM_I_DETAILED = "where-am-i-detailed"
+
+
+@dataclass(frozen=True)
+class ContentItem:
+    """The slice of an object's content being presented (one entry in a contents batch)."""
+
+    start_offset: int
+    end_offset: int
+    string: str
+    caret_offset: int | None = None
+
+
+@dataclass(frozen=True)
+class ContentPosition:
+    """An item's position within a batch of contents presented together."""
+
+    index: int = 0
+    total: int = 1
 
 
 @dataclass(frozen=True)
@@ -73,10 +94,17 @@ class GeneratorContext:
     enabled: bool
     verbose: bool
     focus: Atspi.Accessible | None
-    in_say_all: bool
     in_focus_mode: bool
     active_mode: str | None
-    where_am_i_type: WhereAmI | None
+    reason: PresentationReason
+    prior_obj: Atspi.Accessible | None
+    offset: int | None
+    leaving: bool
+    ancestor_of: Atspi.Accessible | None
+    content_item: ContentItem | None
+    content_position: ContentPosition | None
+    resolved_role: Atspi.Role | str | None
+    include_context: bool
 
 
 class Generator:
@@ -102,6 +130,8 @@ class Generator:
         self._mode: GeneratorMode = mode
         self._script: Script = script
         self._context: GeneratorContext = None  # type: ignore[assignment]
+        self._reading_row: bool = False
+        self._is_generating_descendants: bool = False
         self._active_progress_bars: dict[Atspi.Accessible, tuple[float, Any]] = {}
         self._generators = {
             Atspi.Role.ALERT: self._generate_alert,
@@ -271,31 +301,157 @@ class Generator:
 
         return []
 
-    def generate(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        """Returns the presentation of the object."""
+    def _get_prior_obj(self) -> Atspi.Accessible | None:
+        """Returns the prior object from the context."""
 
-        if not args.get("role"):
-            args["role"] = self._get_functional_role(obj)
+        if self._context is None:
+            return None
+        return self._context.prior_obj
+
+    def _is_progress_bar_update(self) -> bool:
+        """Returns True if this is a progress bar update presentation."""
+
+        return self._get_reason() == PresentationReason.PROGRESS_BAR_UPDATE
+
+    def _get_reason(self) -> PresentationReason:
+        """Returns the reason this presentation is being generated."""
+
+        if self._context is None:
+            return PresentationReason.FOCUS_CHANGE
+        return self._context.reason
+
+    def _is_where_am_i(self) -> bool:
+        """Returns True if this is a where-am-i presentation (basic or detailed)."""
+
+        return self._get_reason() in (
+            PresentationReason.WHERE_AM_I_BASIC,
+            PresentationReason.WHERE_AM_I_DETAILED,
+        )
+
+    def _is_minimal(self) -> bool:
+        """Returns True if only the changed state/value should be presented."""
+
+        return self._get_reason() in (
+            PresentationReason.STATE_CHANGE,
+            PresentationReason.PROGRESS_BAR_UPDATE,
+        )
+
+    def _is_say_all(self) -> bool:
+        """Returns True if this presentation is part of a say-all read."""
+
+        return self._context is not None and self._context.active_mode == focus_manager.SAY_ALL
+
+    def _get_offset(self) -> int | None:
+        """Returns the caller-supplied caret offset from the context."""
+
+        if self._context is None:
+            return None
+        return self._context.offset
+
+    def _is_leaving(self) -> bool:
+        """Returns True if this presentation is leaving an ancestor chain."""
+
+        if self._context is None:
+            return False
+        return self._context.leaving
+
+    def _get_ancestor_of(self) -> Atspi.Accessible | None:
+        """Returns the object whose ancestors are being presented."""
+
+        if self._context is None:
+            return None
+        return self._context.ancestor_of
+
+    def _is_ancestor(self) -> bool:
+        """Returns True if an ancestor (not the leaf object) is being presented."""
+
+        return self._get_ancestor_of() is not None
+
+    def _get_content_item(self) -> ContentItem | None:
+        """Returns the content slice being presented, or None if not a content slice."""
+
+        if self._context is None:
+            return None
+        return self._context.content_item
+
+    def _get_content_position(self) -> ContentPosition:
+        """Returns this item's position within its contents batch."""
+
+        if self._context is None or self._context.content_position is None:
+            return ContentPosition()
+        return self._context.content_position
+
+    def _get_start_offset(self, default: int | None = None) -> int | None:
+        """Returns the content slice's start offset, or default if no slice."""
+
+        item = self._get_content_item()
+        return item.start_offset if item is not None else default
+
+    def _get_end_offset(self, default: int | None = None) -> int | None:
+        """Returns the content slice's end offset, or default if no slice."""
+
+        item = self._get_content_item()
+        return item.end_offset if item is not None else default
+
+    def _get_content_string(self, default: str | None = None) -> str | None:
+        """Returns the content slice's string, or default if no slice."""
+
+        item = self._get_content_item()
+        return item.string if item is not None else default
+
+    def _get_caret_offset(self, default: int | None = None) -> int | None:
+        """Returns the content slice's caret offset, or default if no slice."""
+
+        item = self._get_content_item()
+        return item.caret_offset if item is not None else default
+
+    def _get_resolved_role(self, obj: Atspi.Accessible | None = None) -> Atspi.Role | str | None:
+        """Returns the resolved role (treat-as override or functional role); falls back to obj's."""
+
+        role = self._context.resolved_role if self._context is not None else None
+        if role is None and obj is not None:
+            return AXObject.get_role(obj)
+        return role
+
+    def _include_context(self) -> bool:
+        """Returns whether to present obj framed in its surrounding context (ancestry + suffix)."""
+
+        return self._context is None or self._context.include_context
+
+    def generate(
+        self,
+        obj: Atspi.Accessible,
+        *,
+        role: Atspi.Role | str | None = None,
+        include_context: bool = True,
+        **args,
+    ) -> list[Any]:
+        """Returns the presentation of obj; role overrides the dispatch/treat-as role."""
+
+        resolved_role = role or self._get_functional_role(obj)
 
         _generator = self._generators.get(  # type: ignore
-            args.get("role") or AXObject.get_role(obj),
+            resolved_role or AXObject.get_role(obj),
         )
         if _generator is None:
             tokens = [f"{self._mode.name} GENERATOR:", obj, "lacks dedicated generator"]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             _generator = self._generate_default_presentation
 
-        if not args.get("formatType"):
-            args["formatType"] = "unfocused"
-
         tokens = [f"{self._mode.name} GENERATOR:", _generator, "for", obj, "args:", args]
         debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
+        original_context = self._context
+        self._context = replace(
+            original_context, resolved_role=resolved_role, include_context=include_context
+        )
         result = _generator(obj, **args)  # type: ignore[misc]
+        self._context = original_context
+
         tokens = [f"{self._mode.name} GENERATOR: Results:", result]
         debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
-        if args.get("isProgressBarUpdate") and result and result[0]:
+        if self._is_progress_bar_update() and result and result[0]:
             self._set_progress_bar_update_time_and_value(obj)
 
         return result
@@ -303,13 +459,13 @@ class Generator:
     def get_localized_role_name(self, obj: Atspi.Accessible, **args) -> str:
         """Returns a string representing the localized rolename of obj."""
 
-        result = AXUtilities.get_localized_role_name(obj, args.get("role"))
+        result = AXUtilities.get_localized_role_name(obj, self._get_resolved_role())
         return result
 
     def get_state_indicator(self, obj: Atspi.Accessible, **args) -> list[Any]:
         """Returns an array with the generated state of obj."""
 
-        role = args.get("role", AXObject.get_role(obj))
+        role = self._get_resolved_role(obj)
         checks: list[tuple[Callable[..., bool], Callable[..., list[Any]]]] = [
             (
                 lambda: AXUtilities.is_menu_item(obj, role),
@@ -350,7 +506,7 @@ class Generator:
     def get_value(self, obj: Atspi.Accessible, **args) -> list[Any]:
         """Returns an array with the generated value."""
 
-        role = args.get("role", AXObject.get_role(obj))
+        role = self._get_resolved_role(obj)
         if AXUtilities.is_progress_bar(obj, role):
             return self._generate_progress_bar_value(obj, **args)
 
@@ -383,7 +539,7 @@ class Generator:
 
     @log_generator_output
     def _generate_accessible_description(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if args.get("omitDescription") or AXUtilities.is_terminal(obj):
+        if self._is_generating_descendants or AXUtilities.is_terminal(obj):
             return []
 
         obj_hash = hash(obj)
@@ -461,7 +617,7 @@ class Generator:
         result = []
         label = self._generate_accessible_label(obj, **args)
         name = self._generate_accessible_name(obj, **args)
-        role = args.get("role", AXObject.get_role(obj))
+        role = self._get_resolved_role(obj)
         if not (label or name) and role == Atspi.Role.TABLE_CELL:
             descendant = AXUtilities.active_descendant(obj)
             if descendant is not None:
@@ -502,7 +658,7 @@ class Generator:
 
         link = None
         parent = AXObject.get_parent(obj)
-        if AXUtilities.is_link(obj, args.get("role")):
+        if AXUtilities.is_link(obj, self._get_resolved_role()):
             link = obj
         elif AXUtilities.is_link(parent):
             link = parent
@@ -545,7 +701,7 @@ class Generator:
             Generator.CACHED_STATIC_TEXT[hash(obj)] = result
             return result
 
-        if args.get("formatType") != "ancestor":
+        if not self._is_ancestor():
             result = self._generate_text_expanding_embedded_objects(obj, **args)
             if result:
                 Generator.CACHED_STATIC_TEXT[hash(obj)] = result
@@ -559,8 +715,8 @@ class Generator:
         return result
 
     @log_generator_output
-    def _get_functional_role(self, obj, **args):
-        role = args.get("role", AXObject.get_role(obj))
+    def _get_functional_role(self, obj):
+        role = AXObject.get_role(obj)
         role_checks: list[tuple[Callable[[], bool], Atspi.Role | str]] = [
             (
                 lambda: AXUtilities.is_dpub(obj, role) and AXUtilities.is_landmark(obj),
@@ -657,22 +813,26 @@ class Generator:
         used_description_as_static_text = False
         obj_desc = AXObject.get_description(obj) or AXUtilities.get_displayed_description(obj)
 
+        prior_generating_descendants = self._is_generating_descendants
+        self._is_generating_descendants = True
         for child in descendants:
             if AXUtilities.is_label(child):
                 if self._strings_are_redundant(obj_desc, AXObject.get_name(child)):
                     used_description_as_static_text = True
 
-            child_result = self.generate(child, includeContext=False, omitDescription=True)
+            child_result = self.generate(child, include_context=False)
+
             if child_result:
                 result.extend(child_result)
                 result.extend(self._generate_result_separator(child, **args))
+        self._is_generating_descendants = prior_generating_descendants
 
         Generator.USED_DESCRIPTION_FOR_STATIC_TEXT[hash(obj)] = used_description_as_static_text
         return result
 
     @log_generator_output
     def _generate_focused_item(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        role = args.get("role")
+        role = self._get_resolved_role()
         if not (AXUtilities.is_list(obj, role) or AXUtilities.is_list_box(obj, role)):
             return []
 
@@ -764,9 +924,9 @@ class Generator:
     def _generate_state_checked_for_cell(self, obj: Atspi.Accessible, **args) -> list[Any]:
         result = []
         if self._script.utilities.has_meaningful_toggle_action(obj):
-            args["role"] = Atspi.Role.CHECK_BOX
-            args["includeContext"] = False
-            result.extend(self.generate(obj, **args))
+            result.extend(
+                self.generate(obj, role=Atspi.Role.CHECK_BOX, include_context=False, **args)
+            )
 
         return result
 
@@ -959,8 +1119,8 @@ class Generator:
 
     @log_generator_output
     def _generate_text_substring(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        start = args.get("startOffset")
-        end = args.get("endOffset")
+        start = self._get_start_offset()
+        end = self._get_end_offset()
         if (hash(obj), start, end) in Generator.CACHED_TEXT_SUBSTRING:
             return Generator.CACHED_TEXT_SUBSTRING.get((hash(obj), start, end), [])
 
@@ -969,7 +1129,9 @@ class Generator:
                 Generator.CACHED_TEXT_SUBSTRING[(hash(obj), start, end)] = []
             return []
 
-        substring = args.get("string", AXText.get_substring(obj, start, end))
+        substring = self._get_content_string()
+        if substring is None:
+            substring = AXText.get_substring(obj, start, end)
         if "\ufffc" not in substring:
             if not AXUtilities.is_editable(obj):
                 Generator.CACHED_TEXT_SUBSTRING[(hash(obj), start, end)] = [substring]
@@ -981,8 +1143,8 @@ class Generator:
 
     @log_generator_output
     def _generate_text_line(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        start = args.get("startOffset")
-        end = args.get("endOffset")
+        start = self._get_start_offset()
+        end = self._get_end_offset()
         if (hash(obj), start, end) in Generator.CACHED_TEXT_LINE:
             return Generator.CACHED_TEXT_LINE.get((hash(obj), start, end), [])
 
@@ -1028,15 +1190,16 @@ class Generator:
 
     @log_generator_output
     def _generate_text_expanding_embedded_objects(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        start = args.get("startOffset")
-        end = args.get("endOffset")
+        start = self._get_start_offset()
+        end = self._get_end_offset()
         if (hash(obj), start, end) in Generator.CACHED_TEXT_EXPANDING_EOCS:
             return Generator.CACHED_TEXT_EXPANDING_EOCS.get((hash(obj), start, end), [])
 
+        item = self._get_content_item()
         text = self._script.utilities.expand_eocs(
             obj,
-            args.get("startOffset", 0),
-            args.get("endOffset", -1),
+            item.start_offset if item is not None else 0,
+            item.end_offset if item is not None else -1,
         )
         if (
             text.strip()
@@ -1063,7 +1226,7 @@ class Generator:
 
     @log_generator_output
     def _generate_nesting_level(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if args.get("startOffset") is not None and args.get("endOffset") is not None:
+        if self._get_start_offset() is not None and self._get_end_offset() is not None:
             return []
 
         level = self._get_nesting_level(obj)
@@ -1081,7 +1244,9 @@ class Generator:
         return []
 
     @log_generator_output
-    def _generate_tree_item_level(self, obj: Atspi.Accessible, **args) -> list[Any]:
+    def _generate_tree_item_level(
+        self, obj: Atspi.Accessible, *, new_only: bool = False, **args
+    ) -> list[Any]:
         level = Generator.CACHED_TREE_ITEM_LEVEL.get(hash(obj))
         if level is None:
             level = self._script.utilities.node_level(obj)
@@ -1090,8 +1255,8 @@ class Generator:
         if level < 0:
             return []
 
-        prior_object = args.get("priorObj")
-        if args.get("newOnly") and prior_object:
+        prior_object = self._get_prior_obj()
+        if new_only and prior_object:
             old_level = Generator.CACHED_TREE_ITEM_LEVEL.get(hash(prior_object))
             if old_level is None:
                 old_level = self._script.utilities.node_level(prior_object)
@@ -1159,7 +1324,13 @@ class Generator:
         self.generate() with a synthetic args['role'] = 'REAL_ROLE_TABLE_CELL'
         registered in the _generators dict; that was indirection without
         purpose, since the format-dispatch table mapped the synthetic key
-        to the same method this direct call lands on.
+        to the same method this direct call lands on. The synthetic key
+        was also flagged for removal by two JD-authored TODOs (at
+        generator.py:1185 and speech_generator.py:1789 in earlier
+        upstream revisions). See perf-branch commit 5e463573d for the
+        full refactor and the submission package at
+        submissions/get_info_live_module/ (note: refactor is the
+        REAL_ROLE_TABLE_CELL one, separate from the get_info patch).
         """
 
         return self._generate_table_cell(obj, **args)
@@ -1183,9 +1354,9 @@ class Generator:
     @log_generator_output
     def _generate_table_cell_row(self, obj: Atspi.Accessible, **args) -> list[Any]:
         present_all = (
-            args.get("readingRow") is True
-            or self._context.where_am_i_type == WhereAmI.DETAILED
-            or self._script.utilities.should_read_full_row(obj, args.get("priorObj"))
+            self._reading_row
+            or self._get_reason() == PresentationReason.WHERE_AM_I_DETAILED
+            or self._script.utilities.should_read_full_row(obj, self._get_prior_obj())
         )
 
         if not present_all:
@@ -1195,29 +1366,29 @@ class Generator:
         if row and AXObject.get_name(row) and not AXUtilities.is_layout_only(row):
             return self.generate(row)
 
-        args["readingRow"] = True
         result: list[Any] = []
         cells = AXUtilities.get_showing_cells_in_same_row(
             obj,
             clip_to_window=AXUtilities.is_spreadsheet_cell(obj),
         )
 
-        # Remove any pre-calculated values which only apply to obj and not row cells.
-        do_not_include = ["startOffset", "endOffset", "string"]
-        other_cell_args = args.copy()
-        for arg in do_not_include:
-            other_cell_args.pop(arg, None)
-
+        original_context = self._context
+        prior = original_context.prior_obj
+        prior_reading_row = self._reading_row
+        self._reading_row = True
         for cell in cells:
-            if cell == obj:
-                cell_result = self._generate_real_table_cell(cell, **args)
-            else:
-                cell_result = self._generate_real_table_cell(cell, **other_cell_args)
+            cell_context = replace(original_context, prior_obj=prior)
+            # The content slice applies only to obj, not to the other cells in the row.
+            if cell != obj:
+                cell_context = replace(cell_context, content_item=None)
+            self._context = cell_context
+            cell_result = self._generate_real_table_cell(cell, **args)
             if cell_result and result and self._mode is GeneratorMode.BRAILLE:
                 result.append(braille.Region(object_properties.TABLE_CELL_DELIMITER_BRAILLE))
             result.extend(cell_result)
-            args["priorObj"] = cell
-            other_cell_args["priorObj"] = cell
+            prior = cell
+        self._reading_row = prior_reading_row
+        self._context = original_context
 
         result.extend(self._generate_position_in_list(obj, **args))
         return result
@@ -1258,13 +1429,19 @@ class Generator:
         return [rv]
 
     @log_generator_output
-    def _generate_table_cell_column_header(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if args.get("readingRow") and not self._get_is_nameless_toggle(obj):
+    def _generate_table_cell_column_header(
+        self,
+        obj: Atspi.Accessible,
+        *,
+        new_only: bool = False,
+        **args,
+    ) -> list[Any]:
+        if self._reading_row and not self._get_is_nameless_toggle(obj):
             return []
 
         result: list[Any] = []
-        if args.get("newOnly"):
-            headers = AXUtilities.get_new_column_headers(obj, args.get("priorObj"))
+        if new_only:
+            headers = AXUtilities.get_new_column_headers(obj, self._get_prior_obj())
         else:
             headers = AXUtilities.get_column_headers(obj)
 
@@ -1285,7 +1462,7 @@ class Generator:
         if not self._get_is_nameless_toggle(obj):
             role_string = self.get_localized_role_name(obj, role=Atspi.Role.COLUMN_HEADER)
             if self._mode is GeneratorMode.SPEECH:
-                if self._context.verbose and self._context.where_am_i_type is None:
+                if self._context.verbose and not self._is_where_am_i():
                     text = f"{text} {role_string}"
             elif self._mode is GeneratorMode.BRAILLE and self._context.verbose:
                 text = f"{text} {role_string}"
@@ -1294,13 +1471,19 @@ class Generator:
         return result
 
     @log_generator_output
-    def _generate_table_cell_row_header(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if args.get("readingRow"):
+    def _generate_table_cell_row_header(
+        self,
+        obj: Atspi.Accessible,
+        *,
+        new_only: bool = False,
+        **args,
+    ) -> list[Any]:
+        if self._reading_row:
             return []
 
         result: list[Any] = []
-        if args.get("newOnly"):
-            headers = AXUtilities.get_new_row_headers(obj, args.get("priorObj"))
+        if new_only:
+            headers = AXUtilities.get_new_row_headers(obj, self._get_prior_obj())
         else:
             headers = AXUtilities.get_row_headers(obj)
 
@@ -1320,7 +1503,7 @@ class Generator:
         text = ". ".join(tokens)
         role_string = self.get_localized_role_name(obj, role=Atspi.Role.ROW_HEADER)
         if self._mode is GeneratorMode.SPEECH:
-            if self._context.verbose and self._context.where_am_i_type is None:
+            if self._context.verbose and not self._is_where_am_i():
                 text = f"{text} {role_string}"
         elif self._mode is GeneratorMode.BRAILLE and self._context.verbose:
             text = f"{text} {role_string}"
@@ -1359,12 +1542,14 @@ class Generator:
 
     @log_generator_output
     def _generate_value(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if AXUtilities.is_combo_box(obj, args.get("role")):
+        if AXUtilities.is_combo_box(obj, self._get_resolved_role()):
             if value := self._get_combo_box_value(obj):
                 return [value]
             return []
 
-        if AXUtilities.is_separator(obj, args.get("role")) and not AXUtilities.is_focused(obj):
+        if AXUtilities.is_separator(obj, self._get_resolved_role()) and not AXUtilities.is_focused(
+            obj
+        ):
             return []
 
         result = AXValue.get_current_value_text(obj)

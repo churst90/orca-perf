@@ -88,6 +88,7 @@ from orca.ax_utilities import AXUtilities
 from orca.ax_utilities_event import AXUtilitiesEvent, TextEventReason
 from orca.ax_utilities_text import TextUnit
 from orca.command import BrailleCommand, KeyboardCommand
+from orca.generator import PresentationReason
 
 import gi
 
@@ -98,8 +99,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gi.repository import Atspi
-
-    from orca.generator import WhereAmI
 
 
 class Script(script.Script):
@@ -451,7 +450,11 @@ class Script(script.Script):
                 self.update_braille(new_focus)
                 return True
 
-        manager.present_object(self, new_focus, prior_obj=old_focus)
+        # If we got here because the focused object's name changed, treat the new
+        # content as a fresh presentation: don't pass the same obj as prior_obj,
+        # which would cause the generators to suppress the content.
+        prior = None if (is_name_change and old_focus == new_focus) else old_focus
+        manager.present_object(self, new_focus, prior_obj=prior)
         return True
 
     def activate(self) -> None:
@@ -900,7 +903,7 @@ class Script(script.Script):
 
         if AXUtilities.is_presentable_checked_change(event):
             presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
-            self.present_object(event.source, prior_obj=event.source)
+            self.present_object(event.source, reason=PresentationReason.STATE_CHANGE)
 
         return True
 
@@ -1025,7 +1028,7 @@ class Script(script.Script):
             return True
 
         presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
-        self.present_object(event.source, prior_obj=event.source)
+        self.present_object(event.source, reason=PresentationReason.STATE_CHANGE)
         details = AXUtilities.get_details_content(event.source)
         for detail in details:
             presentation_manager.get_manager().speak_message(detail)
@@ -1037,7 +1040,7 @@ class Script(script.Script):
 
         if AXUtilities.is_presentable_indeterminate_change(event):
             presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
-            self.present_object(event.source, prior_obj=event.source)
+            self.present_object(event.source, reason=PresentationReason.STATE_CHANGE)
 
         return True
 
@@ -1095,7 +1098,7 @@ class Script(script.Script):
 
         if AXUtilities.is_presentable_pressed_change(event):
             presentation_manager.get_manager().interrupt_if_needed_for_object_presentation()
-            self.present_object(event.source, prior_obj=event.source)
+            self.present_object(event.source, reason=PresentationReason.STATE_CHANGE)
 
         return True
 
@@ -1448,15 +1451,19 @@ class Script(script.Script):
         if AXUtilities.is_spin_button(event.source):
             manager.set_last_cursor_position(event.source, AXText.get_caret_offset(event.source))
 
-        if not AXUtilities.is_progress_bar(event.source):
+        is_progress_bar = AXUtilities.is_progress_bar(event.source)
+        if not is_progress_bar:
             presentation_manager.get_manager().interrupt_presentation()
 
         presentation_manager.get_manager().present_object(
             self,
             event.source,
             generate_sound=True,
-            prior_obj=event.source,
-            is_progress_bar_update=AXUtilities.is_progress_bar(event.source),
+            reason=(
+                PresentationReason.PROGRESS_BAR_UPDATE
+                if is_progress_bar
+                else PresentationReason.STATE_CHANGE
+            ),
         )
         return True
 
@@ -1709,7 +1716,7 @@ class Script(script.Script):
         prior_obj: Atspi.Accessible | None = None,
         generate_speech: bool = True,
         generate_braille: bool = True,
-        where_am_i_type: WhereAmI | None = None,
+        reason: PresentationReason | None = None,
     ) -> None:
         """Presents the current object."""
 
@@ -1725,5 +1732,5 @@ class Script(script.Script):
             generate_speech=generate_speech,
             generate_braille=generate_braille,
             prior_obj=prior_obj,
-            where_am_i_type=where_am_i_type,
+            reason=reason,
         )

@@ -78,7 +78,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterable
 
     from .dbus_service import UInt32
-    from .generator import WhereAmI
+    from .generator import PresentationReason
     from .speech_generator import SpeechGeneratorContext
 
     gi.require_version("Atspi", "2.0")
@@ -2864,10 +2864,12 @@ class SpeechPresenter(Extension):
 
     def _build_generator_context(
         self,
-        where_am_i_type: WhereAmI | None = None,
+        reason: PresentationReason | None = None,
+        prior_obj: Atspi.Accessible | None = None,
     ) -> SpeechGeneratorContext:
         """Builds the settings context for speech generators."""
 
+        from .generator import PresentationReason  # pylint: disable=import-outside-toplevel
         from .speech_generator import (  # pylint: disable=import-outside-toplevel
             SpeechGeneratorContext,
         )
@@ -2886,10 +2888,17 @@ class SpeechPresenter(Extension):
             enabled=speech_mgr.get_speech_is_enabled(),
             verbose=self.use_verbose_speech(),
             focus=mgr.get_locus_of_focus(),
-            in_say_all=in_say_all,
             in_focus_mode=document_presenter.get_presenter().get_in_focus_mode(),
             active_mode=active_mode,
-            where_am_i_type=where_am_i_type,
+            reason=reason or PresentationReason.FOCUS_CHANGE,
+            prior_obj=prior_obj,
+            offset=None,
+            leaving=False,
+            ancestor_of=None,
+            content_item=None,
+            content_position=None,
+            resolved_role=None,
+            include_context=True,
             in_preferences_window=mgr.is_in_preferences_window(),
             auto_language_switching_content=speech_mgr.get_auto_language_switching(),
             only_switch_configured_languages=speech_mgr.get_only_switch_configured_languages(),
@@ -2932,7 +2941,8 @@ class SpeechPresenter(Extension):
     ) -> list:
         """Generates speech utterances for contents without speaking them."""
 
-        context = self._build_generator_context()
+        prior_obj = args.pop("priorObj", None)
+        context = self._build_generator_context(prior_obj=prior_obj)
         return script.get_speech_generator().generate_contents(contents, context, **args)
 
     def generate_speech_string(self, script: default.Script, obj: Atspi.Accessible) -> str:
@@ -2966,8 +2976,9 @@ class SpeechPresenter(Extension):
         if not (active_script := self._get_active_script()):
             return
 
-        where_am_i_type = args.pop("where_am_i_type", None)
-        context = self._build_generator_context(where_am_i_type)
+        reason = args.pop("reason", None)
+        prior_obj = args.pop("priorObj", None)
+        context = self._build_generator_context(reason, prior_obj=prior_obj)
         generator = active_script.get_speech_generator()
         utterances = generator.generate_contents(contents, context, **args)
         self._speak(utterances)
@@ -2978,18 +2989,15 @@ class SpeechPresenter(Extension):
         obj: Atspi.Accessible,
         *,
         prior_obj: Atspi.Accessible | None = None,
-        where_am_i_type: WhereAmI | None = None,
-        is_progress_bar_update: bool = False,
+        reason: PresentationReason | None = None,
     ) -> None:
         """Generates speech for obj using the script's speech generator and speaks it."""
 
-        context = self._build_generator_context(where_am_i_type)
-        utterances = script.get_speech_generator().generate_speech(
-            obj,
-            context,
-            priorObj=prior_obj,
-            isProgressBarUpdate=is_progress_bar_update,
+        context = self._build_generator_context(
+            reason,
+            prior_obj=prior_obj,
         )
+        utterances = script.get_speech_generator().generate_speech(obj, context)
         self._speak(utterances)
 
     def speak_line(

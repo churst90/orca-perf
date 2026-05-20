@@ -27,7 +27,7 @@ from orca import debug, messages, speech_generator, table_navigator
 from orca.ax_object import AXObject
 from orca.ax_text import AXText
 from orca.ax_utilities import AXUtilities
-from orca.generator import WhereAmI
+from orca.generator import PresentationReason
 
 if TYPE_CHECKING:
     import gi
@@ -87,7 +87,7 @@ class SpeechGenerator(speech_generator.SpeechGenerator):
         """Treat toggle buttons in the toolbar specially. This is so we can
         have more natural sounding speech such as "bold on", "bold off", etc."""
 
-        if not AXUtilities.is_toggle_button(obj, args.get("role")):
+        if not AXUtilities.is_toggle_button(obj, self._get_resolved_role()):
             return []
 
         if not AXUtilities.is_tool_bar(AXObject.get_parent(obj)):
@@ -116,7 +116,7 @@ class SpeechGenerator(speech_generator.SpeechGenerator):
 
     @log_generator_output
     def _generate_real_table_cell(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if self._context.in_say_all:
+        if self._is_say_all():
             return []
 
         result = super()._generate_real_table_cell(obj, **args)
@@ -131,14 +131,14 @@ class SpeechGenerator(speech_generator.SpeechGenerator):
 
         if (
             self._context.announce_spreadsheet_cell_coordinates
-            or self._context.where_am_i_type == WhereAmI.BASIC
+            or self._get_reason() == PresentationReason.WHERE_AM_I_BASIC
         ):
             label = AXUtilities.get_label_for_cell_coordinates(
                 obj,
             ) or AXObject.get_name(obj)
             result.append(label)
 
-        if self._script.utilities.should_read_full_row(obj, args.get("priorObj")):
+        if self._script.utilities.should_read_full_row(obj, self._get_prior_obj()):
             if AXUtilities.cell_row_changed(obj):
                 return result
 
@@ -157,14 +157,14 @@ class SpeechGenerator(speech_generator.SpeechGenerator):
     def _generate_new_ancestors(self, obj: Atspi.Accessible, **args) -> list[Any]:
         if AXUtilities.is_spreadsheet_cell(
             obj,
-        ) and AXUtilities.is_document_panel(AXObject.get_parent(args.get("priorObj"))):
+        ) and AXUtilities.is_document_panel(AXObject.get_parent(self._get_prior_obj())):
             return []
 
         return super()._generate_new_ancestors(obj, **args)
 
     @log_generator_output
     def _generate_old_ancestors(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if AXUtilities.is_spreadsheet_cell(args.get("priorObj")):
+        if AXUtilities.is_spreadsheet_cell(self._get_prior_obj()):
             return []
 
         return super()._generate_old_ancestors(obj, **args)

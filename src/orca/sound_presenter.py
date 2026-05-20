@@ -33,11 +33,25 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
-from . import dbus_service, debug, gsettings_registry, guilabels, preferences_grid_base, sound
+from . import (
+    dbus_service,
+    debug,
+    document_presenter,
+    focus_manager,
+    gsettings_registry,
+    guilabels,
+    preferences_grid_base,
+    sound,
+)
+from .generator import GeneratorContext, PresentationReason
 
 if TYPE_CHECKING:
     from .dbus_service import UInt32
+    from .scripts import default
     from .sound import Icon, Tone
+
+    gi.require_version("Atspi", "2.0")
+    from gi.repository import Atspi
 
 
 @gsettings_registry.get_registry().gsettings_enum(
@@ -453,6 +467,50 @@ class SoundPresenter:
             self._progress_bar_cache[id(obj)] = (time.time(), percent)
 
         return present
+
+    def _build_generator_context(
+        self,
+        reason: PresentationReason | None = None,
+        prior_obj: Atspi.Accessible | None = None,
+    ) -> GeneratorContext:
+        """Builds the settings context for sound generators."""
+
+        mgr = focus_manager.get_manager()
+        active_mode, _obj = mgr.get_active_mode_and_object_of_interest()
+
+        return GeneratorContext(
+            enabled=self.get_sound_is_enabled(),
+            verbose=False,
+            focus=mgr.get_locus_of_focus(),
+            in_focus_mode=document_presenter.get_presenter().get_in_focus_mode(),
+            active_mode=active_mode,
+            reason=reason or PresentationReason.FOCUS_CHANGE,
+            prior_obj=prior_obj,
+            offset=None,
+            leaving=False,
+            ancestor_of=None,
+            content_item=None,
+            content_position=None,
+            resolved_role=None,
+            include_context=True,
+        )
+
+    def present_generated_sound(
+        self,
+        script: default.Script,
+        obj: Atspi.Accessible,
+        *,
+        prior_obj: Atspi.Accessible | None = None,
+        reason: PresentationReason | None = None,
+    ) -> None:
+        """Generates sound for obj using the script's sound generator and plays it."""
+
+        context = self._build_generator_context(
+            reason,
+            prior_obj=prior_obj,
+        )
+        sounds = script.get_sound_generator().generate_sound(obj, context)
+        self.play(sounds)
 
     def play(self, sounds: list[Icon | Tone] | Icon | Tone, interrupt: bool = True) -> None:
         """Plays the specified sound(s)."""
