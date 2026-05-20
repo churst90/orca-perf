@@ -334,8 +334,7 @@ class OCRPresenter(Extension):
 
         self._externally_suspended.clear()
         suspended_count = 0
-        # pylint: disable-next=protected-access
-        for cmd in list(manager._keyboard_commands.values()):
+        for cmd in manager.get_all_keyboard_commands():
             if cmd.get_name() in ocr_command_names:
                 continue
             binding = cmd.get_keybinding()
