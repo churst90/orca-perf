@@ -37,10 +37,13 @@ from typing import TYPE_CHECKING
 
 import gi
 
+gi.require_version("Atspi", "2.0")
+gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import GObject, Gtk  # noqa: E402
+from gi.repository import Atspi, Gdk, GLib, GObject, Gtk  # noqa: E402
 
 from . import (
+    ax_device_manager,
     clipboard,
     dbus_service,
     debug,
@@ -54,7 +57,7 @@ from .ax_object import AXObject
 from .command import Command, KeyboardCommand
 from .extension import Extension
 from . import ocr_capture, ocr_engine
-from .ocr_buffer import OCRBuffer
+from .ocr_buffer import OCRBuffer, OCRLine
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -202,19 +205,24 @@ class OCRPresenter(Extension):
                 )
             return True
 
-        self._show_dialog(script, buffer)
+        self._show_dialog(script, buffer, window)
         return True
 
     def get_last_buffer(self) -> OCRBuffer | None:
         """Returns the most recently produced buffer, or None.
 
-        Exposed so Phase 2's mouse-routing layer can read the same data
-        without re-running the pipeline.
+        Exposed so external callers can read the same data without
+        re-running the pipeline.
         """
 
         return self._last_buffer
 
-    def _show_dialog(self, script: default.Script, buffer: OCRBuffer) -> None:
+    def _show_dialog(
+        self,
+        script: default.Script,
+        buffer: OCRBuffer,
+        source_window: Atspi.Accessible,
+    ) -> None:
         if self._dialog is not None:
             self._dialog.destroy()
             self._dialog = None
@@ -222,6 +230,7 @@ class OCRPresenter(Extension):
         self._dialog = _OCRResultDialog(
             script,
             buffer,
+            source_window,
             destroyed_callback=self._on_dialog_destroyed,
         )
         self._dialog.show()
@@ -236,16 +245,25 @@ class _OCRResultDialog:
     A real TreeView -- so Orca's existing widget-navigation handling
     speaks each row as the user arrows through it. Closing the dialog
     returns focus to the originating window.
+
+    Phase 2: NumPad / (left-click), NumPad * (right-click), Enter and
+    NumPad Enter (left-click) on the TreeView synthesize a mouse click
+    at the center of the currently-selected line's bounding box in
+    the original source window. The dialog hides itself before the
+    click so the synthesized event lands on the window, not on us.
     """
 
     def __init__(
         self,
         script: default.Script,
         buffer: OCRBuffer,
+        source_window: Atspi.Accessible,
         destroyed_callback: Callable[[Gtk.Dialog], None],
     ) -> None:
         self._script = script
         self._buffer = buffer
+        self._source_window = source_window
+        self._tree: Gtk.TreeView | None = None
         self._gui = self._build(buffer)
         self._gui.connect("destroy", destroyed_callback)
 
@@ -282,6 +300,9 @@ class _OCRResultDialog:
         column = Gtk.TreeViewColumn("Recognized line", renderer, text=0)
         tree.append_column(column)
 
+        tree.connect("key-press-event", self._on_tree_keypress)
+        self._tree = tree
+
         # Land the cursor on the first row so Orca speaks something
         # immediately when the dialog opens.
         if len(store) > 0:
@@ -299,6 +320,90 @@ class _OCRResultDialog:
             )
             return
         dialog.destroy()
+
+    def _on_tree_keypress(self, _widget: Gtk.TreeView, event: Gdk.EventKey) -> bool:
+        """Intercept the mouse-routing keys; let everything else propagate."""
+
+        keyval = event.keyval
+        if keyval in (Gdk.KEY_KP_Divide,):
+            return self._click_current_line(button="b1c")
+        if keyval in (Gdk.KEY_KP_Multiply,):
+            return self._click_current_line(button="b3c")
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            return self._click_current_line(button="b1c")
+        return False
+
+    def _get_selected_line(self) -> OCRLine | None:
+        if self._tree is None:
+            return None
+        selection = self._tree.get_selection()
+        model, tree_iter = selection.get_selected()
+        if tree_iter is None:
+            return None
+        path = model.get_path(tree_iter)
+        idx = path.get_indices()[0]
+        if 0 <= idx < len(self._buffer.lines):
+            return self._buffer.lines[idx]
+        return None
+
+    def _click_current_line(self, button: str) -> bool:
+        """Synthesize a mouse click at the selected line's screen center.
+
+        Returns True so GTK stops propagating the keypress (we own it).
+        """
+
+        line = self._get_selected_line()
+        if line is None:
+            presentation_manager.get_manager().present_message("OCR: no line selected.")
+            return True
+
+        # Center of the line's bbox, in absolute screen coordinates.
+        screen_x = line.screen_x + line.screen_width // 2
+        screen_y = line.screen_y + line.screen_height // 2
+
+        # Translate to coordinates relative to the source window (the
+        # device API treats coords as relative to the obj it is given).
+        try:
+            window_rect = AXComponent.get_rect(self._source_window)
+        except Exception as error:
+            msg = f"OCR PRESENTER: Failed to read source window rect: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            presentation_manager.get_manager().present_message(
+                "OCR: source window no longer accessible."
+            )
+            return True
+
+        rel_x = screen_x - int(window_rect.x)
+        rel_y = screen_y - int(window_rect.y)
+        action = "Right-click" if button == "b3c" else "Click"
+
+        tokens = [
+            "OCR PRESENTER:", action,
+            f"at screen ({screen_x},{screen_y}) =",
+            f"window-rel ({rel_x},{rel_y}) on line:",
+            repr(line.text[:60]),
+        ]
+        debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
+
+        # Hide immediately so the dialog isn't under the synthesized
+        # cursor; destroy on the next idle so the click event is
+        # processed against the now-focused source window.
+        self._gui.hide()
+        source_window = self._source_window
+
+        def _do_click() -> bool:
+            ok = ax_device_manager.get_manager().generate_mouse_event(
+                source_window, rel_x, rel_y, button,
+            )
+            if not ok:
+                presentation_manager.get_manager().present_message(
+                    f"OCR: {action.lower()} did not reach the window."
+                )
+            self._gui.destroy()
+            return False
+
+        GLib.idle_add(_do_click)
+        return True
 
     def show(self) -> None:
         self._gui.show_all()  # pylint: disable=no-member
