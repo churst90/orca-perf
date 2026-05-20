@@ -1,57 +1,139 @@
 # Example user extensions
 
-This directory holds reference implementations of Orca user
-extensions developed in the perf branch.
+Reference extensions developed in the perf branch. Two layouts are
+shown:
 
-## ocr.py
+  - **`ocr/`** -- a *package* extension: a directory containing
+    `manifest.toml` + multiple `.py` modules. The loader recognizes
+    the package because of the manifest, hashes the whole tree for
+    approval, and imports the entry module as a child of a
+    synthetic `orca_user_extension.<name>` package so relative
+    imports between sibling modules work.
+  - **`ocr.orca-ext`** -- the same package, zipped into the
+    distribution archive format. Install with
+    `orca --install-extension ocr.orca-ext`.
 
-NVDA-style OCR / content recognition as a user extension.
-**Single-file** (~1400 lines) because the loader hashes per-file
-and approves per-file; multi-file extensions would require
-approving each helper module separately. See
-`submissions/ext_api_gaps/06-multi-file-extensions.md` for the
-upstream issue proposing package-style extensions.
+## ocr/
 
-To install:
+NVDA-style OCR / content recognition. Press Orca+R on any window to
+capture its pixels, recognize the text via Tesseract, and enter a
+virtual buffer navigable with NumPad keys.
+
+| File             | Purpose                                                   |
+|------------------|-----------------------------------------------------------|
+| `manifest.toml`  | Extension metadata (name, version, compat, entry point)   |
+| `__init__.py`    | Empty marker so Python tooling recognizes the package     |
+| `ocr.py`         | Entry module -- the `OcrExtension` class                  |
+| `buffer.py`      | `OCRWord` / `OCRLine` / `OCRBuffer` dataclasses           |
+| `capture.py`     | Three screen-capture backends: Gdk, ImageMagick, portal   |
+| `engine.py`      | Tesseract subprocess wrapper + TSV parser                 |
+
+**Requires** `tesseract` and at least one language data pack
+(`tesseract-langpack-eng` on Fedora, `tesseract-ocr-eng` on Debian).
+Without tesseract, pressing Orca+R speaks an error; no other Orca
+behavior is affected.
+
+## Installing the .orca-ext
 
 ```sh
-cp examples/extensions/ocr.py ~/.local/share/orca/extensions/
-orca --approve-extension ocr.py
-# restart Orca
+orca --install-extension /path/to/ocr.orca-ext
+# Output: Installed extension: ocr
 ```
 
-Then press `Orca+R` on any window to enter OCR mode.
+Behind the scenes:
 
-**Requires** `tesseract` and at least one language pack
-(e.g. `tesseract-langpack-eng`). Failure to find tesseract gives
-a spoken error message; no other Orca behavior is affected.
+1. The archive is extracted to a temp directory.
+2. The manifest is validated.
+3. The contents are moved to `~/.local/share/orca/extensions/ocr/`.
+4. The package's hash is computed (deterministic SHA256 over all
+   files in the directory) and registered in dconf's
+   `approved-user-extensions`.
+5. On next Orca start, the package loads automatically.
 
-### Controller API surface used
+Restart Orca (`pkill orca && orca --replace &`) and try Orca+R on
+any window.
 
-This extension is a demonstration of the public extension API:
+## Uninstalling
 
-| Used                                            | Where it comes from                 |
-|-------------------------------------------------|-------------------------------------|
-| `self.controller.present_message_internal`      | docs/user-extensions.md (existing)  |
-| `self.controller.get_active_window`             | perf-branch commit `766a2e96a`      |
-| `self.controller.get_active_window_screen_rect` | perf-branch commit `766a2e96a`      |
-| `self.controller.set_clipboard_text`            | perf-branch commit `766a2e96a`      |
-| `self.controller.synthesize_mouse_event`        | perf-branch commit `766a2e96a`      |
+```sh
+orca --uninstall-extension ocr
+# Output: Uninstalled extension: ocr
+```
 
-The single remaining direct-internal import is `command_manager`,
-used for modal-key discipline (suspending other commands' bindings
-while OCR mode is active). This is a known gap; see
-`submissions/ext_api_gaps/05-modal-key-discipline.md` for the
-proposed controller API to replace it.
+Removes `~/.local/share/orca/extensions/ocr/`, revokes approval,
+and clears the disabled-extensions entry if present.
 
-### Companion built-in
+## Building the .orca-ext from source
 
-The perf branch also carries OCR as a **built-in** extension at
+```sh
+./build-orca-ext.sh ocr ocr.orca-ext
+```
+
+The script zips the package directory into a deterministic archive
+(sorted entries, no extended attributes), suitable for distribution.
+
+## Controller API surface used
+
+This extension is a clean reference for what the user-extension
+framework can do with only public API:
+
+| Used                                            | From                                       |
+|-------------------------------------------------|--------------------------------------------|
+| `self.controller.present_message_internal`      | `docs/user-extensions.md` (existing)       |
+| `self.controller.get_active_window`             | perf commit `766a2e96a`                    |
+| `self.controller.get_active_window_screen_rect` | perf commit `766a2e96a`                    |
+| `self.controller.set_clipboard_text`            | perf commit `766a2e96a`                    |
+| `self.controller.synthesize_mouse_event`        | perf commit `766a2e96a`                    |
+| `self.controller.enter_modal_mode`              | perf commit `98d2b2914`                    |
+| `self.controller.exit_modal_mode`               | perf commit `98d2b2914`                    |
+
+**Zero direct internal imports.** Every Orca-internal capability
+goes through `self.controller.*`. The remaining `from orca import`
+lines are for sanctioned surfaces (`debug`, `keybindings`,
+`command.{Command,KeyboardCommand}`, `extension.Extension`).
+
+## Manifest format
+
+`manifest.toml` is TOML. Required fields:
+
+```toml
+[extension]
+name = "ocr"             # alphanumeric + dash + underscore;
+                         # becomes the install-dir name
+                         # AND the dconf approval key
+
+[entry]
+module = "ocr"           # imports <module>.py from the package
+class  = "OcrExtension"  # the Extension subclass within that module
+```
+
+Optional fields (for human consumption / future tooling):
+
+```toml
+[extension]
+display-name = "OCR (Optical Character Recognition)"
+version = "0.2.0"
+author = "..."
+license = "LGPL-2.1-or-later"
+url = "..."
+description = "..."
+
+[compatibility]
+min-orca = "51.alpha"
+last-tested-orca = "51.alpha"
+
+[dependencies]
+system = ["tesseract"]   # informational; not auto-checked yet
+```
+
+## Companion built-in
+
+The perf branch also carries OCR as a *built-in* extension at
 `src/orca/ocr_presenter.py` (plus `ocr_buffer.py`, `ocr_capture.py`,
-`ocr_engine.py`). The user-extension version here is intentionally
-a single file -- the built-in version is the maintainable
-multi-module reference. If you install the user extension, disable
-the built-in to avoid both registering on the same keybindings:
+`ocr_engine.py`). The user-extension package here is the same
+feature wearing the user-extension framework's clothes; the built-in
+is the source of record. If you install both, disable the built-in
+to avoid keybinding collisions:
 
 ```sh
 dconf write /org/gnome/orca/profiles/default/extensions/disabled-extensions \

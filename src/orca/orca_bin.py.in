@@ -154,6 +154,14 @@ class Parser(argparse.ArgumentParser):
             "--revoke-extension", action="store",
             help=messages.CLI_REVOKE_EXTENSION,
             metavar=messages.CLI_EXTENSION_FILENAME)
+        self.add_argument(
+            "--install-extension", action="store",
+            help=messages.CLI_INSTALL_EXTENSION,
+            metavar=messages.CLI_ORCA_EXT_FILENAME)
+        self.add_argument(
+            "--uninstall-extension", action="store",
+            help=messages.CLI_UNINSTALL_EXTENSION,
+            metavar=messages.CLI_EXTENSION_NAME)
 
         self._optionals.title = messages.CLI_OPTIONAL_ARGUMENTS
 
@@ -301,6 +309,28 @@ def _revoke_extension(filename: str) -> int:
     print(messages.CLI_EXTENSION_REVOKED % filename)
     return 0
 
+def _install_extension(extensions_dir: str, archive_path: str) -> int:
+    """Install a .orca-ext archive into extensions_dir."""
+
+    loader = extension_loader.get_loader()
+    name, error = loader.install_orca_ext(archive_path, extensions_dir)
+    if error is not None:
+        print(messages.CLI_EXTENSION_INSTALL_FAILED % error)
+        return 1
+    print(messages.CLI_EXTENSION_INSTALLED % name)
+    return 0
+
+def _uninstall_extension(extensions_dir: str, name: str) -> int:
+    """Remove a package extension by name and revoke its approval."""
+
+    loader = extension_loader.get_loader()
+    ok, error = loader.uninstall_extension(name, extensions_dir)
+    if not ok:
+        print(messages.CLI_EXTENSION_UNINSTALL_FAILED % error)
+        return 1
+    print(messages.CLI_EXTENSION_UNINSTALLED % name)
+    return 0
+
 def _get_speech_server_factory_names() -> list[str]:
     """Returns the names of valid speech server factory modules."""
 
@@ -347,6 +377,10 @@ def main() -> int:
         return _approve_extension(extensions_dir, args.approve_extension)
     if args.revoke_extension:
         return _revoke_extension(args.revoke_extension)
+    if args.install_extension:
+        return _install_extension(extensions_dir, args.install_extension)
+    if args.uninstall_extension:
+        return _uninstall_extension(extensions_dir, args.uninstall_extension)
 
     _load_customizations(prefs_dir)
     extension_loader.get_loader().discover_and_load(extensions_dir)

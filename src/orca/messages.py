@@ -287,6 +287,21 @@ CLI_DEBUG_FILE_NAME = _("FILE")
 # which allows the user to approve a user extension for loading.
 CLI_APPROVE_EXTENSION = _("Approve a user extension for loading")
 
+# Translators: Help text for the orca --install-extension command-line option,
+# which extracts a .orca-ext archive into the user's extensions directory
+# and auto-approves the resulting installation.
+CLI_INSTALL_EXTENSION = _("Install a .orca-ext extension archive")
+
+# Translators: Metavar for the --install-extension command-line option.
+CLI_ORCA_EXT_FILENAME = _("FILENAME.orca-ext")
+
+# Translators: Help text for the orca --uninstall-extension command-line
+# option, which removes a previously-installed package extension by name.
+CLI_UNINSTALL_EXTENSION = _("Uninstall an installed package extension by name")
+
+# Translators: Metavar for the --uninstall-extension command-line option.
+CLI_EXTENSION_NAME = _("NAME")
+
 # Translators: This is the description of command line option '--revoke-extension'
 # which allows the user to revoke approval for a user extension.
 CLI_REVOKE_EXTENSION = _("Revoke approval for a user extension")
@@ -302,6 +317,24 @@ CLI_EXTENSION_NOT_FOUND = _("Extension not found: %s")
 # Translators: This message is presented when a user extension has been approved
 # for loading. The string substitution is the extension filename.
 CLI_EXTENSION_APPROVED = _("Approved extension: %s")
+
+# Translators: Status line printed after a successful
+# orca --install-extension. %s is the installed extension's name
+# (from manifest.toml's extension.name).
+CLI_EXTENSION_INSTALLED = _("Installed extension: %s")
+
+# Translators: Status line printed when orca --install-extension fails.
+# %s is a human-readable reason (e.g. "not a zip archive", "manifest.toml
+# is invalid or incomplete").
+CLI_EXTENSION_INSTALL_FAILED = _("Could not install extension: %s")
+
+# Translators: Status line printed after a successful
+# orca --uninstall-extension. %s is the removed extension's name.
+CLI_EXTENSION_UNINSTALLED = _("Uninstalled extension: %s")
+
+# Translators: Status line printed when orca --uninstall-extension fails.
+# %s is a human-readable reason.
+CLI_EXTENSION_UNINSTALL_FAILED = _("Could not uninstall extension: %s")
 
 # Translators: This message is presented when approval for a user extension has
 # been revoked. The string substitution is the extension filename.
