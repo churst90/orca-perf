@@ -708,6 +708,195 @@ OCR_UPSCALE_FACTOR = _("Image _upscale factor:")
 # the range 0-100. Words below the threshold are dropped as garbage.
 OCR_CONFIDENCE_THRESHOLD = _("Minimum word _confidence:")
 
+# Translators: Title of the Extensions page in the Orca preferences
+# dialog. Extensions are user-installable add-ons that extend Orca's
+# behavior.
+EXTENSIONS_PAGE_TITLE = _("Extensions")
+
+# Translators: Brief explanation shown at the top of the Extensions
+# preferences page describing what user extensions are.
+EXTENSIONS_INFO = _(
+    "User extensions add new commands or behaviors to Orca. "
+    "Extensions run with the same privileges as Orca itself, so only "
+    "install ones you trust."
+)
+
+# Translators: Frame label for the master enable/disable control on
+# the Extensions preferences page.
+EXTENSIONS_MASTER_FRAME_LABEL = _("Loading")
+
+# Translators: Radio button label on the Extensions preferences page.
+# When selected, Orca loads user extensions normally (subject to
+# per-extension enable/disable).
+EXTENSIONS_LOAD_NORMALLY = _("Load extensions _normally")
+
+# Translators: Radio button label on the Extensions preferences page.
+# When selected, Orca disables every user extension at runtime and on
+# next launch. Useful for troubleshooting.
+EXTENSIONS_DISABLE_ALL = _("_Disable all user extensions")
+
+# Translators: Heading above the list of installed extensions on the
+# Extensions preferences page.
+EXTENSIONS_LIST_HEADING = _("Installed extensions")
+
+# Translators: TreeView column heading for the extension's display
+# name.
+EXTENSIONS_COL_NAME = _("Name")
+
+# Translators: TreeView column heading for the extension's version
+# string.
+EXTENSIONS_COL_VERSION = _("Version")
+
+# Translators: TreeView column heading for the extension's current
+# enable/load status.
+EXTENSIONS_COL_STATUS = _("Status")
+
+# Translators: Status string shown for an extension that is currently
+# loaded and active.
+EXTENSIONS_STATUS_LOADED = _("Enabled")
+
+# Translators: Status string shown for an extension that the user has
+# disabled via the preferences UI.
+EXTENSIONS_STATUS_DISABLED = _("Disabled")
+
+# Translators: Status string shown for an extension that is approved
+# on disk but is not currently loaded (usually because it was added
+# after Orca started; takes effect on next launch).
+EXTENSIONS_STATUS_NOT_LOADED = _("Will load on next launch")
+
+# Translators: Status string shown for an extension whose files on
+# disk have changed since it was approved; Orca refuses to load it
+# until the user re-approves.
+EXTENSIONS_STATUS_MODIFIED = _("Modified since approval")
+
+# Translators: Status string shown for an extension that has never
+# been approved by the user; Orca will not load it.
+EXTENSIONS_STATUS_UNAPPROVED = _("Not approved")
+
+# Translators: Accessible group name for the row of action buttons
+# (Install, Uninstall, Enable/Disable, Settings, About) on the
+# Extensions preferences page.
+EXTENSIONS_ACTIONS_GROUP = _("Extension actions")
+
+# Translators: Button label on the Extensions preferences page. Opens
+# a file chooser to install a new .orca-ext archive.
+EXTENSIONS_INSTALL_BTN = _("_Install...")
+
+# Translators: Button label on the Extensions preferences page.
+# Removes the selected extension from disk and revokes its approval.
+EXTENSIONS_UNINSTALL_BTN = _("_Uninstall")
+
+# Translators: Button label on the Extensions preferences page.
+# Toggles the selected extension between enabled and disabled. This
+# variant of the label is shown when the extension is currently
+# enabled, so clicking will disable it.
+EXTENSIONS_DISABLE_BTN = _("D_isable")
+
+# Translators: Button label on the Extensions preferences page.
+# Toggles the selected extension between enabled and disabled. This
+# variant of the label is shown when the extension is currently
+# disabled, so clicking will enable it.
+EXTENSIONS_ENABLE_BTN = _("_Enable")
+
+# Translators: Button label on the Extensions preferences page. Opens
+# a dialog with the selected extension's own settings, if any.
+EXTENSIONS_SETTINGS_BTN = _("_Settings...")
+
+# Translators: Button label on the Extensions preferences page. Opens
+# a dialog with the selected extension's metadata: author, version,
+# license, URL, install path, and SHA256 hash.
+EXTENSIONS_ABOUT_BTN = _("A_bout")
+
+# Translators: Title of the file chooser dialog that opens when the
+# user clicks Install... on the Extensions preferences page.
+EXTENSIONS_INSTALL_DIALOG_TITLE = _("Install Extension")
+
+# Translators: Title of the confirmation dialog that opens when the
+# user clicks Uninstall on the Extensions preferences page.
+EXTENSIONS_UNINSTALL_DIALOG_TITLE = _("Uninstall Extension")
+
+# Translators: Name of the file filter on the Install Extension file
+# chooser dialog. Restricts the picker to files ending in .orca-ext.
+EXTENSIONS_FILE_FILTER = _("Orca extension archives (*.orca-ext)")
+
+# Translators: Body of the confirmation dialog shown after picking a
+# .orca-ext file to install. The %s placeholder is replaced with the
+# extension's display name, version, and author.
+EXTENSIONS_INSTALL_CONFIRM = _(
+    "About to install %s. Extensions run with the same privileges as "
+    "Orca itself. Only continue if you trust the source."
+)
+
+# Translators: Body of the confirmation dialog shown when uninstalling
+# an extension. %s is the extension's display name.
+EXTENSIONS_UNINSTALL_CONFIRM = _(
+    "Remove %s? Files will be deleted from your extensions directory."
+)
+
+# Translators: Error message shown when the user picks a file that
+# isn't a valid .orca-ext archive (corrupt zip, missing manifest,
+# or contains unsafe paths).
+EXTENSIONS_INSTALL_BAD_ARCHIVE = _(
+    "That file isn't a valid Orca extension archive."
+)
+
+# Translators: Error message shown when install fails. %s is the
+# underlying error from the loader.
+EXTENSIONS_INSTALL_FAILED = _("Install failed: %s")
+
+# Translators: Error message shown when uninstall fails. %s is the
+# underlying error from the loader.
+EXTENSIONS_UNINSTALL_FAILED = _("Uninstall failed: %s")
+
+# Translators: Error message shown when the user clicks Uninstall on
+# a single-file (.py) extension. Only package extensions installed
+# via .orca-ext are uninstallable from the UI.
+EXTENSIONS_UNINSTALL_PACKAGE_ONLY = _(
+    "Only package extensions can be uninstalled from this dialog. "
+    "Single-file extensions must be removed manually from the "
+    "extensions directory."
+)
+
+# Translators: Status-line confirmation shown after a successful
+# install. %s is the new extension's name.
+EXTENSIONS_INSTALLED = _("Installed %s.")
+
+# Translators: Status-line confirmation shown after a successful
+# uninstall. %s is the removed extension's display name.
+EXTENSIONS_UNINSTALLED = _("Uninstalled %s.")
+
+# Translators: Status-line note shown when the user re-enables an
+# extension that wasn't loaded at startup. %s is the extension's
+# display name. The change will take effect next launch.
+EXTENSIONS_RESTART_TO_ENABLE = _(
+    "%s will be enabled on next Orca launch."
+)
+
+# Translators: Field label in the About Extension dialog.
+EXTENSIONS_ABOUT_AUTHOR = _("Author")
+
+# Translators: Field label in the About Extension dialog.
+EXTENSIONS_ABOUT_VERSION = _("Version")
+
+# Translators: Field label in the About Extension dialog.
+EXTENSIONS_ABOUT_LICENSE = _("License")
+
+# Translators: Field label in the About Extension dialog.
+EXTENSIONS_ABOUT_URL = _("URL")
+
+# Translators: Field label in the About Extension dialog. Names the
+# Python class that implements the extension.
+EXTENSIONS_ABOUT_MODULE = _("Module")
+
+# Translators: Field label in the About Extension dialog. The
+# filesystem path where the extension is installed.
+EXTENSIONS_ABOUT_PATH = _("Path")
+
+# Translators: Field label in the About Extension dialog. The
+# SHA256 fingerprint of the extension's files; lets the user verify
+# the extension hasn't been tampered with since approval.
+EXTENSIONS_ABOUT_SHA256 = _("SHA256")
+
 # Translators: Orca's preferences can be configured on a per-application basis,
 # allowing users to customize Orca's behavior, keybindings, etc. to work one
 # way in LibreOffice and another way in a chat application. This string is the

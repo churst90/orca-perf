@@ -103,6 +103,7 @@ lib_sources = [
   'event_manager.py',
   'extension.py',
   'extension_loader.py',
+  'extensions_prefs_panel.py',
   'flat_review.py',
   'flat_review_finder.py',
   'flat_review_presenter.py',

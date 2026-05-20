@@ -50,6 +50,7 @@ from . import (
     debug,
     document_presenter,
     event_manager,
+    extensions_prefs_panel,
     focus_manager,
     gsettings_registry,
     guilabels,
@@ -316,6 +317,12 @@ class OrcaSetupGUI(Gtk.ApplicationWindow):  # pylint: disable=too-many-instance-
         self.stack.add_named(self.ocr_grid, "ocr")
         self._add_navigation_row("ocr", self.ocr_grid.get_label().get_text())
 
+        self.extensions_grid = extensions_prefs_panel.create_preferences_grid()
+        self.stack.add_named(self.extensions_grid, "extensions")
+        self._add_navigation_row(
+            "extensions", self.extensions_grid.get_label().get_text(),
+        )
+
         doc_presenter = document_presenter.get_presenter()
         self.document_grid = doc_presenter.create_preferences_grid(update_title)
         self.stack.add_named(self.document_grid, "documents")
@@ -366,6 +373,7 @@ class OrcaSetupGUI(Gtk.ApplicationWindow):  # pylint: disable=too-many-instance-
             "chat": self.chat_grid,
             "mouse": self.mouse_grid,
             "ocr": self.ocr_grid,
+            "extensions": self.extensions_grid,
             "documents": self.document_grid,
             "pronunciation": self.pronunciation_grid,
             "sound": self.sound_grid,
