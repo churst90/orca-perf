@@ -1709,7 +1709,7 @@ class SpeechGenerator(generator.Generator):
         role = args.get("role")
         if (
             self._only_speak_displayed_text()
-            or args.get("inMouseReview")
+            or self._context.active_mode == focus_manager.MOUSE_REVIEW
             or not obj
             or not AXUtilities.is_selectable(obj)
             or AXUtilities.is_selected(obj)
@@ -1989,7 +1989,7 @@ class SpeechGenerator(generator.Generator):
 
     @log_generator_output
     def _generate_text_line(self, obj: Atspi.Accessible, **args) -> list[Any]:
-        if args.get("inMouseReview") and AXUtilities.is_editable(obj):
+        if self._context.active_mode == focus_manager.MOUSE_REVIEW and AXUtilities.is_editable(obj):
             return []
 
         announce_formatting = self._should_announce_attribute_changes(obj)
@@ -2196,13 +2196,15 @@ class SpeechGenerator(generator.Generator):
         format_type = args.get("formatType", "unfocused")
         if format_type == "ancestor" or args.get("priorObj") == obj:
             return self._generate_details_for(obj, **args)
+        if self._context.where_am_i_type == WhereAmI.BASIC:
+            return []
+        if self._context.where_am_i_type == WhereAmI.DETAILED:
+            return self._generate_ancestors(obj, **args)
         if format_type == "unfocused":
             return self._generate_old_ancestors(obj, **args) + self._generate_new_ancestors(
                 obj,
                 **args,
             )
-        if self._context.where_am_i_type == WhereAmI.DETAILED:
-            return self._generate_ancestors(obj, **args)
         return []
 
     def _generate_default_presentation(self, obj: Atspi.Accessible, **args) -> list[Any]:

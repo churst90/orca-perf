@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     gi.require_version("Atspi", "2.0")
     from gi.repository import Atspi
 
+    from .generator import WhereAmI
     from .input_event import KeyboardEvent
     from .scripts import default
     from .sound import Icon, Tone
@@ -390,14 +391,16 @@ class PresentationManager:
         generate_speech: bool = True,
         generate_braille: bool = True,
         generate_sound: bool = False,
-        **args: Any,
+        prior_obj: Atspi.Accessible | None = None,
+        where_am_i_type: WhereAmI | None = None,
+        is_progress_bar_update: bool = False,
     ) -> None:
         """Generates and presents an object via speech, braille, and sound."""
 
         if obj is None:
             return
 
-        if args.get("isProgressBarUpdate"):
+        if is_progress_bar_update:
             percent = AXValue.get_value_as_percent(obj)
             is_same_app = (
                 AXUtilities.get_application(obj)
@@ -434,13 +437,29 @@ class PresentationManager:
                 )
 
         if generate_speech:
-            speech_presenter.get_presenter().present_generated_speech(script, obj, **args)
+            speech_presenter.get_presenter().present_generated_speech(
+                script,
+                obj,
+                prior_obj=prior_obj,
+                where_am_i_type=where_am_i_type,
+                is_progress_bar_update=is_progress_bar_update,
+            )
 
         if generate_braille:
-            braille_presenter.get_presenter().present_generated_braille(script, obj, **args)
+            braille_presenter.get_presenter().present_generated_braille(
+                script,
+                obj,
+                prior_obj=prior_obj,
+                where_am_i_type=where_am_i_type,
+                is_progress_bar_update=is_progress_bar_update,
+            )
 
         if generate_sound:
-            sounds = script.get_sound_generator().generate_sound(obj, **args)
+            sounds = script.get_sound_generator().generate_sound(
+                obj,
+                priorObj=prior_obj,
+                isProgressBarUpdate=is_progress_bar_update,
+            )
             sound_presenter.get_presenter().play(sounds)
 
     def speak_contents(

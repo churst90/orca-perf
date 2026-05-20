@@ -846,23 +846,16 @@ class BraillePresenter(Extension):
             self._monitor.reapply_css(background=value)
         return True
 
-    # pylint: disable-next=too-many-arguments
     def present_regions(
         self,
         regions: list[braille.Region],
         focused_region: braille.Region | None,
-        extra_region: braille.Region | None = None,
         *,
         pan_to_cursor: bool = True,
         indicate_links: bool = True,
         stop_flash: bool = True,
     ) -> None:
         """Build a line from regions and present it as a single braille line."""
-
-        if extra_region is not None:
-            regions = list(regions)
-            regions.append(extra_region)
-            focused_region = extra_region
 
         line = braille.Line()
         line.add_regions(regions)
@@ -928,23 +921,28 @@ class BraillePresenter(Extension):
         self,
         script: default.Script,
         obj: Atspi.Accessible,
-        **args: Any,
+        *,
+        prior_obj: Atspi.Accessible | None = None,
+        where_am_i_type: WhereAmI | None = None,
+        is_progress_bar_update: bool = False,
+        offset: int | None = None,
     ) -> None:
         """Generates braille for obj using the script's braille generator and displays it."""
 
         if not self.use_braille():
             return
 
-        where_am_i_type = args.pop("where_am_i_type", None)
         context = self._build_generator_context(where_am_i_type)
         generator = script.get_braille_generator()
-        result, focused_region = generator.generate_braille(obj, context, **args)
+        result, focused_region = generator.generate_braille(
+            obj,
+            context,
+            priorObj=prior_obj,
+            isProgressBarUpdate=is_progress_bar_update,
+            offset=offset,
+        )
         if result:
-            self.present_regions(
-                list(result),
-                focused_region,
-                extra_region=args.get("extraRegion"),
-            )
+            self.present_regions(list(result), focused_region)
 
     @gsettings_registry.get_registry().gsetting(
         key=KEY_ENABLED,

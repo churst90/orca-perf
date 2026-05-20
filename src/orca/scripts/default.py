@@ -98,6 +98,8 @@ if TYPE_CHECKING:
 
     from gi.repository import Atspi
 
+    from orca.generator import WhereAmI
+
 
 class Script(script.Script):
     """The default Script for presenting information to the user."""
@@ -447,7 +449,7 @@ class Script(script.Script):
                 self.update_braille(new_focus)
                 return True
 
-        manager.present_object(self, new_focus, priorObj=old_focus)
+        manager.present_object(self, new_focus, prior_obj=old_focus)
         return True
 
     def activate(self) -> None:
@@ -518,12 +520,20 @@ class Script(script.Script):
         if bypass_mode_manager.get_manager().is_active():
             bypass_mode_manager.get_manager().toggle_enabled(self)
 
-    def update_braille(self, obj: Atspi.Accessible, **args) -> None:
+    def update_braille(
+        self,
+        obj: Atspi.Accessible,
+        offset: int | None = None,
+    ) -> None:
         """Updates the braille display to show obj."""
 
         if not obj:
             return
-        braille_presenter.get_presenter().present_generated_braille(self, obj, **args)
+        braille_presenter.get_presenter().present_generated_braille(
+            self,
+            obj,
+            offset=offset,
+        )
 
     ########################################################################
     #                                                                      #
@@ -1443,8 +1453,8 @@ class Script(script.Script):
             self,
             event.source,
             generate_sound=True,
-            priorObj=event.source,
-            isProgressBarUpdate=AXUtilities.is_progress_bar(event.source),
+            prior_obj=event.source,
+            is_progress_bar_update=AXUtilities.is_progress_bar(event.source),
         )
         return True
 
@@ -1695,7 +1705,9 @@ class Script(script.Script):
         obj: Atspi.Accessible,
         offset: int | None = None,
         prior_obj: Atspi.Accessible | None = None,
-        **args,
+        generate_speech: bool = True,
+        generate_braille: bool = True,
+        where_am_i_type: WhereAmI | None = None,
     ) -> None:
         """Presents the current object."""
 
@@ -1705,11 +1717,11 @@ class Script(script.Script):
         if offset is not None:
             AXText.set_caret_offset(obj, offset)
 
-        speech_only = args.pop("speechonly", False)
         presentation_manager.get_manager().present_object(
             self,
             obj,
-            generate_braille=not speech_only,
-            priorObj=prior_obj,
-            **args,
+            generate_speech=generate_speech,
+            generate_braille=generate_braille,
+            prior_obj=prior_obj,
+            where_am_i_type=where_am_i_type,
         )

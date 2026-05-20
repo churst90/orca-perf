@@ -69,6 +69,8 @@ from .speech_generator import SpeechGenerator
 if TYPE_CHECKING:
     from gi.repository import Atspi
 
+    from orca.generator import WhereAmI
+
 
 class Script(default.Script):
     """Provides support for accessing user-agent-agnostic web-content."""
@@ -236,31 +238,53 @@ class Script(default.Script):
         obj: Atspi.Accessible,
         offset: int | None = None,
         prior_obj: Atspi.Accessible | None = None,
-        **args,
+        generate_speech: bool = True,
+        generate_braille: bool = True,
+        where_am_i_type: WhereAmI | None = None,
     ) -> None:
         if obj is None:
             return
 
         if not self.utilities.in_document_content(obj) or AXUtilities.is_document(obj):
-            super().present_object(obj, offset=offset, prior_obj=prior_obj, **args)
+            super().present_object(
+                obj,
+                offset=offset,
+                prior_obj=prior_obj,
+                generate_speech=generate_speech,
+                generate_braille=generate_braille,
+                where_am_i_type=where_am_i_type,
+            )
             return
 
         mode, _obj = focus_manager.get_manager().get_active_mode_and_object_of_interest()
         if mode in [focus_manager.OBJECT_NAVIGATOR, focus_manager.MOUSE_REVIEW]:
-            super().present_object(obj, offset=offset, prior_obj=prior_obj, **args)
+            super().present_object(
+                obj,
+                offset=offset,
+                prior_obj=prior_obj,
+                generate_speech=generate_speech,
+                generate_braille=generate_braille,
+                where_am_i_type=where_am_i_type,
+            )
             return
 
         if AXUtilities.is_status_bar(obj) or AXUtilities.is_alert(obj):
             if not document_presenter.get_presenter().in_focus_mode(self.app):
                 self.utilities.set_caret_position(obj, 0)
-            super().present_object(obj, offset=offset, prior_obj=prior_obj, **args)
+            super().present_object(
+                obj,
+                offset=offset,
+                prior_obj=prior_obj,
+                generate_speech=generate_speech,
+                generate_braille=generate_braille,
+                where_am_i_type=where_am_i_type,
+            )
             return
 
         if (
             caret_navigator.get_navigator().last_input_event_was_navigation_command()
             or structural_navigator.get_navigator().last_input_event_was_navigation_command()
             or table_navigator.get_navigator().last_input_event_was_navigation_command()
-            or args.get("includeContext")
             or AXUtilities.get_table(obj)
         ):
             prior_context = self.utilities.get_prior_context()
@@ -278,7 +302,14 @@ class Script(default.Script):
         if AXUtilities.is_entry(obj):
             if not document_presenter.get_presenter().in_focus_mode(self.app):
                 self.utilities.set_caret_position(obj, 0)
-            super().present_object(obj, offset=offset, prior_obj=prior_obj, **args)
+            super().present_object(
+                obj,
+                offset=offset,
+                prior_obj=prior_obj,
+                generate_speech=generate_speech,
+                generate_braille=generate_braille,
+                where_am_i_type=where_am_i_type,
+            )
             return
 
         tokens = ["WEB: Presenting object", obj]
@@ -298,8 +329,14 @@ class Script(default.Script):
         ):
             self.utilities.set_caret_position(contents[0][0], contents[0][1])
         presenter = presentation_manager.get_manager()
-        presenter.display_contents(contents)
-        presenter.speak_contents(contents, priorObj=prior_obj, **args)
+        if generate_braille:
+            presenter.display_contents(contents)
+        if generate_speech:
+            presenter.speak_contents(
+                contents,
+                priorObj=prior_obj,
+                where_am_i_type=where_am_i_type,
+            )
 
     def _update_braille_caret_position(self, obj: Atspi.Accessible) -> None:
         """Try to reposition the cursor without having to do a full update."""
@@ -310,10 +347,14 @@ class Script(default.Script):
 
         super()._update_braille_caret_position(obj)
 
-    def update_braille(self, obj: Atspi.Accessible, **args) -> None:
+    def update_braille(
+        self,
+        obj: Atspi.Accessible,
+        offset: int | None = None,
+    ) -> None:
         """Updates the braille display to show the given object."""
 
-        tokens = ["WEB: updating braille for", obj, args]
+        tokens = ["WEB: updating braille for", obj, "offset:", offset]
         debug.print_tokens(debug.LEVEL_INFO, tokens, True, True)
 
         if not braille_presenter.get_presenter().use_braille():
@@ -324,14 +365,14 @@ class Script(default.Script):
         ) and "\ufffc" not in AXText.get_all_text(obj):
             tokens = ["WEB: updating braille in focus mode", obj]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            super().update_braille(obj, **args)
+            super().update_braille(obj, offset=offset)
             return
 
-        document = args.get("documentFrame", self.utilities.get_top_level_document_for_object(obj))
+        document = self.utilities.get_top_level_document_for_object(obj)
         if not document:
             tokens = ["WEB: updating braille for non-document object", obj]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            super().update_braille(obj, **args)
+            super().update_braille(obj, offset=offset)
             return
 
         is_content_editable = self.utilities.is_content_editable_with_embedded_objects(obj)
@@ -346,21 +387,20 @@ class Script(default.Script):
         ):
             tokens = ["WEB: updating braille for unhandled navigation type", obj]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            super().update_braille(obj, **args)
+            super().update_braille(obj, offset=offset)
             return
 
         # TODO - JD: Getting the caret context can, by side effect, update it. This in turn
         # can prevent us from presenting table column headers when braille is enabled because
         # we think they are not "new." Commit bd877203f0 addressed that, but we need to stop
         # such side effects from happening in the first place.
-        offset = args.get("offset")
         if offset is None:
             obj, offset = self.utilities.get_caret_context(document)
         if offset > 0 and is_content_editable and self.utilities.treat_as_text_object(obj):
             offset = min(offset, AXText.get_character_count(obj))
 
         contents = self.utilities.get_line_contents_at_offset(obj, offset)
-        presentation_manager.get_manager().display_contents(contents, documentFrame=document)
+        presentation_manager.get_manager().display_contents(contents)
 
     def _pan_braille_left(self, event: input_event.InputEvent | None = None) -> bool:
         """Pans braille to the left."""
@@ -477,7 +517,7 @@ class Script(default.Script):
                 caret_offset = text_offset
 
         self.utilities.set_caret_context(new_focus, caret_offset, document)
-        self.update_braille(new_focus, documentFrame=document)
+        self.update_braille(new_focus)
 
         contents = None
         args = {}
@@ -579,7 +619,7 @@ class Script(default.Script):
                 self,
                 new_focus,
                 generate_braille=False,
-                **args,  # type: ignore[arg-type]
+                prior_obj=old_focus,
             )
 
         document_presenter.get_presenter().update_mode_if_needed(self, old_focus, new_focus)

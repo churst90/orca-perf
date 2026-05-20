@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from gi.repository import Atspi
 
     from . import label_inference
+    from .generator import WhereAmI
 
 
 class Script:
@@ -357,9 +358,15 @@ class Script:
         obj: Atspi.Accessible,
         offset: int | None = None,
         prior_obj: Atspi.Accessible | None = None,
-        **args,
+        generate_speech: bool = True,
+        generate_braille: bool = True,
+        where_am_i_type: WhereAmI | None = None,
     ) -> None:
         """Presents the current object."""
 
-    def update_braille(self, obj: Atspi.Accessible, **args) -> None:
+    def update_braille(
+        self,
+        obj: Atspi.Accessible,
+        offset: int | None = None,
+    ) -> None:
         """Updates the braille display to show obj."""
