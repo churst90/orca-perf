@@ -26,6 +26,7 @@ import ast
 import hashlib
 import importlib.util
 import os
+import sys
 from typing import TYPE_CHECKING
 
 from . import debug, gsettings_registry
@@ -266,7 +267,22 @@ class ExtensionLoader:
                 return None
 
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            # Register in sys.modules BEFORE exec_module. Some stdlib
+            # paths -- notably @dataclass on Python 3.14, also
+            # typing.NamedTuple and functools.singledispatch with
+            # type-based dispatch -- do `sys.modules.get(cls.__module__)`
+            # during class creation. If the module isn't there yet, that
+            # returns None and crashes at the next .__dict__ access.
+            # This is the canonical "import a Python file" pattern; see
+            # importlib docs.
+            sys.modules[module_name] = module
+            try:
+                spec.loader.exec_module(module)
+            except Exception:
+                # Roll back the registration on failure so a half-loaded
+                # broken extension doesn't pollute sys.modules.
+                sys.modules.pop(module_name, None)
+                raise
         except Exception as error:  # pylint: disable=broad-exception-caught
             msg = f"EXTENSION LOADER: Failed to load {filepath}: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
