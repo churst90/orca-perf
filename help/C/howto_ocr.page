@@ -1,0 +1,191 @@
+<page xmlns="http://projectmallard.org/1.0/" type="topic" id="howto_ocr">
+  <info>
+    <link type="guide" xref="index#getting_started" />
+    <link type="seealso" xref="commands_ocr" />
+    <title type="sort">2. OCR</title>
+    <title type="link">How to Use OCR</title>
+    <desc>
+      Reading and interacting with text in any window, including
+      inaccessible ones
+    </desc>
+    <credit type="author">
+      <name>Cody Hurst</name>
+      <email>codythurst@gmail.com</email>
+    </credit>
+    <license>
+      <p>Creative Commons Share Alike 3.0</p>
+    </license>
+  </info>
+  <title>How to Use OCR</title>
+
+  <section id="what_is_ocr">
+    <title>What OCR Is</title>
+    <p>
+      Many applications expose their content through the accessibility
+      tree, so Orca can read them with no special help. Some do not.
+      Terminal output from certain virtual-terminal toolkits, Electron
+      apps, games, and applications using custom or older widget
+      libraries can all be partly or entirely opaque to a screen reader.
+    </p>
+    <p>
+      Orca's OCR (optical character recognition) feature reads such
+      windows the way a sighted user would: it captures the pixels on
+      screen, recognizes the text in them using the Tesseract OCR
+      engine, and presents the result as a virtual buffer you can
+      navigate, select from, copy to the clipboard, and click into. The
+      original window does not need to expose anything to accessibility
+      for OCR to work.
+    </p>
+  </section>
+
+  <section id="installing">
+    <title>Installing Tesseract</title>
+    <p>
+      OCR requires the <cmd>tesseract</cmd> command-line tool and at
+      least one language data pack. On most distributions:
+    </p>
+    <list>
+      <item>
+        <p>Fedora, RHEL, and derivatives:
+          <cmd>sudo dnf install tesseract tesseract-langpack-eng</cmd>
+        </p>
+      </item>
+      <item>
+        <p>Debian, Ubuntu, and derivatives:
+          <cmd>sudo apt install tesseract-ocr tesseract-ocr-eng</cmd>
+        </p>
+      </item>
+      <item>
+        <p>Arch and derivatives:
+          <cmd>sudo pacman -S tesseract tesseract-data-eng</cmd>
+        </p>
+      </item>
+    </list>
+    <p>
+      Replace <cmd>eng</cmd> with the ISO 639-2 code for any other
+      language you want OCR to recognize. You can install multiple
+      language packs.
+    </p>
+    <p>
+      If you press the OCR command without Tesseract installed, Orca
+      will say "OCR unavailable: tesseract is not installed." No other
+      Orca behavior is affected.
+    </p>
+  </section>
+
+  <section id="basic_workflow">
+    <title>Basic Workflow: Read a Window</title>
+    <steps>
+      <item>
+        <p>Switch focus to the window you want to read.</p>
+      </item>
+      <item>
+        <p>Press <keyseq><key>Orca Modifier</key><key>R</key></keyseq>.
+          Orca says "Recognizing." while Tesseract processes the
+          window's pixels.</p>
+      </item>
+      <item>
+        <p>When recognition completes, Orca enters OCR mode and
+          announces the number of recognized lines along with the first
+          word ("OCR mode on. 47 lines. Welcome").</p>
+      </item>
+      <item>
+        <p>Use the NumPad keys to navigate the recognized text — line
+          by line with <key>KP 8</key> and <key>KP 2</key>, word by
+          word with <key>KP 4</key> and <key>KP 6</key>, character by
+          character with <key>KP 1</key> and <key>KP 3</key>. See
+          <link xref="commands_ocr">OCR Commands</link> for the full
+          list.</p>
+      </item>
+      <item>
+        <p>Press <keyseq><key>Orca Modifier</key><key>R</key></keyseq>
+          again to exit OCR mode.</p>
+      </item>
+    </steps>
+  </section>
+
+  <section id="copy_workflow">
+    <title>Copying Text Out of Any Window</title>
+    <p>
+      Selecting text in OCR mode works the way it does in a normal text
+      editor, just with NumPad keys instead of arrow keys.
+    </p>
+    <steps>
+      <item>
+        <p>Enter OCR mode with
+          <keyseq><key>Orca Modifier</key><key>R</key></keyseq>.</p>
+      </item>
+      <item>
+        <p>Navigate to the start of the text you want to copy.</p>
+      </item>
+      <item>
+        <p>Press <key>KP Decimal</key> to mark the selection anchor at
+          the current cursor position. Orca says "Anchor set at
+          [word]."</p>
+      </item>
+      <item>
+        <p>Navigate to the end of the text you want to copy while
+          holding <key>Shift</key>. For example,
+          <keyseq><key>Shift</key><key>KP 6</key></keyseq> extends the
+          selection by one word, <keyseq><key>Shift</key><key>KP 2</key></keyseq>
+          by one line, <keyseq><key>Shift</key><key>KP 3</key></keyseq>
+          by one character.</p>
+      </item>
+      <item>
+        <p>Press <key>KP Add</key> to copy the selection to the system
+          clipboard. Orca says "Copied selection: [preview]." Paste the
+          text anywhere with the usual
+          <keyseq><key>Ctrl</key><key>V</key></keyseq>.</p>
+      </item>
+    </steps>
+    <p>
+      If you only need to copy the current line and have not set an
+      anchor, just press <key>KP Add</key> directly — it falls back to
+      copying the current line when no selection is active.
+    </p>
+  </section>
+
+  <section id="click_workflow">
+    <title>Clicking on Things in Inaccessible Applications</title>
+    <p>
+      Once you have navigated to a word that you want to click, press
+      <key>KP Divide</key> (or <key>KP Enter</key>) for a left-click, or
+      <key>KP Multiply</key> for a right-click. The click is sent to the
+      original source window at the screen position of that word. Because
+      the OCR buffer is purely virtual and has no on-screen widget, the
+      click reaches the underlying application directly.
+    </p>
+    <p>
+      OCR mode stays active after a click, so you can navigate to another
+      word and click again without re-running recognition.
+    </p>
+  </section>
+
+  <section id="limits">
+    <title>Limitations</title>
+    <list>
+      <item>
+        <p>Recognition quality depends on Tesseract and on the rendered
+          text. Small, antialiased, or non-Latin scripts may give
+          incorrect results. Confidence-filtered words below the quality
+          threshold are silently dropped.</p>
+      </item>
+      <item>
+        <p>OCR recognizes a snapshot of the window's pixels at the moment
+          you press the keybinding. If the window content changes
+          afterward, the buffer becomes stale. Re-press
+          <keyseq><key>Orca Modifier</key><key>R</key></keyseq> to
+          re-recognize.</p>
+      </item>
+      <item>
+        <p>The capture backend currently supports X11 only. Wayland
+          support via <cmd>xdg-desktop-portal</cmd> is planned.</p>
+      </item>
+      <item>
+        <p>OCR mode temporarily takes over the NumPad keys that are
+          normally bound to flat-review commands. The flat-review
+          bindings are restored when you exit OCR mode.</p>
+      </item>
+    </list>
+  </section>
+</page>

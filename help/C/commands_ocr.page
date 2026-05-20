@@ -1,0 +1,196 @@
+<page xmlns="http://projectmallard.org/1.0/" type="topic" id="commands_ocr">
+  <info>
+    <link type="next" xref="commands_mouse" />
+    <link type="guide" xref="commands#reviewing_screen_contents" />
+    <link type="seealso" xref="howto_ocr" />
+    <title type="sort">2. OCR</title>
+    <title type="link">OCR</title>
+    <desc>
+      Commands for recognizing and acting on the text in any window
+    </desc>
+    <credit type="author">
+      <name>Cody Hurst</name>
+      <email>codythurst@gmail.com</email>
+    </credit>
+    <license>
+      <p>Creative Commons Share Alike 3.0</p>
+    </license>
+  </info>
+  <title>OCR Commands</title>
+  <p>
+    Orca's <link xref="howto_ocr">OCR</link> commands let you capture the
+    text of the currently focused window, recognize it through Tesseract,
+    and navigate the result as a virtual buffer. Selecting and copying
+    text works in any window, including inaccessible applications such as
+    some terminals, Electron apps, and games. Synthesized mouse clicks
+    pass through to the underlying window so you can click on words you
+    have navigated to.
+  </p>
+  <p>
+    OCR requires the <cmd>tesseract</cmd> command-line tool and at least
+    one language data pack installed on your system. See
+    <link xref="howto_ocr">How to Use OCR</link> for installation
+    instructions.
+  </p>
+
+  <section id="entering_exiting">
+    <title>Entering and Exiting OCR Mode</title>
+    <list>
+      <item>
+        <p>Toggle OCR mode (start or stop) on the currently focused window:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>Orca Modifier</key><key>R</key></keyseq></p></item>
+          <item><p>Laptop: <keyseq><key>Orca Modifier</key><key>R</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Exit OCR mode (alternate):</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP Subtract</key></keyseq></p></item>
+          <item><p>Laptop: <keyseq><key>KP Subtract</key></keyseq></p></item>
+        </list>
+      </item>
+    </list>
+  </section>
+
+  <section id="navigation">
+    <title>Navigating the OCR Buffer</title>
+    <p>
+      Once OCR mode is active, the following commands move the virtual
+      cursor through the recognized text. Orca announces each position as
+      you move. While OCR mode is active, these keys are temporarily
+      taken over from the flat-review feature; the flat-review bindings
+      are restored when you exit OCR mode.
+    </p>
+    <list>
+      <item>
+        <p>Previous line:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 8</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Next line:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 2</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Previous word:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 4</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Next word:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 6</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Previous character:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 1</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Next character:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 3</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>First word of buffer:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 7</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Last word of buffer:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 9</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Re-speak the current word:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP 5</key></keyseq></p></item>
+        </list>
+      </item>
+    </list>
+  </section>
+
+  <section id="selection">
+    <title>Selecting and Copying Text</title>
+    <p>
+      Selection works like a normal text editor: mark an anchor, navigate
+      to extend the selection, then copy. Selections may span any number
+      of lines, words, or characters, and Orca speaks a short preview of
+      what was copied.
+    </p>
+    <list>
+      <item>
+        <p>Mark selection anchor at the current OCR cursor:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP Decimal</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Extend selection by line (forward or back):</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>Shift</key><key>KP 2</key></keyseq> or <keyseq><key>Shift</key><key>KP 8</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Extend selection by word:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>Shift</key><key>KP 6</key></keyseq> or <keyseq><key>Shift</key><key>KP 4</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Extend selection by character:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>Shift</key><key>KP 3</key></keyseq> or <keyseq><key>Shift</key><key>KP 1</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Copy the selection (or the current line if no selection) to the clipboard:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP Add</key></keyseq></p></item>
+        </list>
+      </item>
+    </list>
+    <note>
+      <p>
+        Plain navigation commands (without <key>Shift</key>) automatically
+        clear the selection anchor. To preserve a selection while
+        navigating, hold <key>Shift</key> on every move from the moment
+        you set the anchor.
+      </p>
+    </note>
+  </section>
+
+  <section id="clicking">
+    <title>Clicking Elements</title>
+    <p>
+      Clicks are delivered to the original source window at the screen
+      coordinates of the word currently under the OCR cursor. Because the
+      OCR buffer is virtual and has no on-screen widget, the synthesized
+      click reaches the underlying application directly.
+    </p>
+    <list>
+      <item>
+        <p>Left-click on the word at the OCR cursor:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP Divide</key></keyseq> or <keyseq><key>KP Enter</key></keyseq></p></item>
+        </list>
+      </item>
+      <item>
+        <p>Right-click on the word at the OCR cursor:</p>
+        <list>
+          <item><p>Desktop: <keyseq><key>KP Multiply</key></keyseq></p></item>
+        </list>
+      </item>
+    </list>
+  </section>
+</page>
