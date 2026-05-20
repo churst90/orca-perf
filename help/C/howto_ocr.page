@@ -178,8 +178,14 @@
           re-recognize.</p>
       </item>
       <item>
-        <p>The capture backend currently supports X11 only. Wayland
-          support via <cmd>xdg-desktop-portal</cmd> is planned.</p>
+        <p>Capture works under X11 and under real Wayland. On X11,
+          Orca uses an in-process GDK call. On Wayland, Orca uses
+          the <cmd>xdg-desktop-portal</cmd> Screenshot service, which
+          may prompt for permission the first time you press
+          <keyseq><key>Orca Modifier</key><key>R</key></keyseq> in a
+          session. Click <gui>Allow</gui>; subsequent OCR calls
+          within the same session are typically granted
+          automatically.</p>
       </item>
       <item>
         <p>OCR mode temporarily takes over the NumPad keys that are

@@ -285,11 +285,11 @@ class OCRPresenter(Extension):
 
         window_name = AXObject.get_name(window) or ""
 
-        # If a previous OCR is still running, refuse the new request.
-        # Tesseract typically takes 0.3-2s; the user should hear the
-        # busy message rather than have two recognitions overlap and
-        # produce inconsistent state.
-        if self._pending_pid is not None:
+        # If a previous OCR is still running (either capture or
+        # recognize phase), refuse the new request. The user should
+        # hear the busy message rather than have two recognitions
+        # overlap and produce inconsistent state.
+        if self._pending_context is not None:
             if notify_user:
                 self._say(messages.OCR_BUSY)
             return True
@@ -297,46 +297,74 @@ class OCRPresenter(Extension):
         if notify_user:
             self._say(messages.OCR_RECOGNIZING)
 
-        upscale_factor = self.get_upscale_factor()
-        lang = self.get_ocr_lang()
-        min_confidence = self.get_confidence_threshold()
-
-        try:
-            png = ocr_capture.capture_region(x, y, width, height)
-            png = ocr_capture.upscale_png(png, upscale_factor)
-        except ocr_capture.OCRCaptureError as error:
-            msg = f"OCR PRESENTER: Capture failed: {error}"
-            debug.print_message(debug.LEVEL_WARNING, msg, True)
-            if notify_user:
-                self._say(messages.OCR_CAPTURE_FAILED % error)
-            return True
-
-        # Stash everything the completion callback will need. The
-        # callback runs after Tesseract exits, on the GLib main loop;
-        # by then the locals from this scope are gone.
+        # Stash everything the chain of callbacks will need. The
+        # capture and recognize callbacks both run from the GLib main
+        # loop, by which point the locals from this scope are gone.
         self._pending_context = {
             "window": window,
             "window_name": window_name,
             "x": x, "y": y,
             "width": width, "height": height,
             "notify_user": notify_user,
+            "upscale_factor": self.get_upscale_factor(),
+            "lang": self.get_ocr_lang(),
+            "min_confidence": self.get_confidence_threshold(),
             "start": time.time(),
         }
+        # Capture is async to accommodate the xdg-desktop-portal path
+        # under real Wayland (the portal's Screenshot signal is
+        # delivered asynchronously). On X11 the in-process Gdk path
+        # succeeds before capture_region_async returns, so
+        # _on_capture_done fires synchronously.
+        ocr_capture.capture_region_async(
+            x, y, width, height, self._on_capture_done,
+        )
+        return True
+
+    def _on_capture_done(
+        self, png_bytes: bytes | None, error: str | None,
+    ) -> None:
+        """Completion callback for ocr_capture.capture_region_async.
+
+        Runs on the GLib main loop after the capture backend
+        completes. Picks up per-request state, upscales the captured
+        image, and kicks off the asynchronous Tesseract subprocess.
+        """
+
+        ctx = self._pending_context
+        if ctx is None:
+            msg = "OCR PRESENTER: _on_capture_done fired without pending context"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return
+
+        notify_user = ctx["notify_user"]
+
+        if error is not None or png_bytes is None:
+            self._pending_context = None
+            self._pending_pid = None
+            msg = f"OCR PRESENTER: capture failed: {error or 'no bytes returned'}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            if notify_user:
+                self._say(messages.OCR_CAPTURE_FAILED % (error or "unknown"))
+            return
+
+        png_bytes = ocr_capture.upscale_png(png_bytes, ctx["upscale_factor"])
+
         pid = ocr_engine.recognize_async(
-            png,
-            capture_x=x,
-            capture_y=y,
-            upscale_factor=upscale_factor,
-            lang=lang,
-            min_confidence=min_confidence,
+            png_bytes,
+            capture_x=ctx["x"],
+            capture_y=ctx["y"],
+            upscale_factor=ctx["upscale_factor"],
+            lang=ctx["lang"],
+            min_confidence=ctx["min_confidence"],
             on_done=self._on_recognize_done,
         )
         if pid is None:
-            # Synchronous failure already reported via on_done.
+            # recognize_async already called on_done with the error.
             self._pending_context = None
-            return True
+            self._pending_pid = None
+            return
         self._pending_pid = pid
-        return True
 
     def _on_recognize_done(
         self,
