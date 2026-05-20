@@ -43,7 +43,6 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import (
-    ax_device_manager,
     clipboard,
     dbus_service,
     debug,
@@ -52,6 +51,7 @@ from . import (
     keybindings,
     presentation_manager,
 )
+from .ax_action import AXAction
 from .ax_component import AXComponent
 from .ax_object import AXObject
 from .command import Command, KeyboardCommand
@@ -132,7 +132,21 @@ class OCRPresenter(Extension):
                 )
             return True
 
-        rect = AXComponent.get_rect(window)
+        # Use SCREEN coords explicitly: AXComponent.get_rect uses
+        # CoordType.WINDOW which returns (0, 0) for a top-level window
+        # (since the window is at the origin of its own coordinate space).
+        # We need the actual on-screen position so the captured pixels
+        # and the per-word screen coordinates downstream are correct.
+        try:
+            rect = Atspi.Component.get_extents(window, Atspi.CoordType.SCREEN)
+        except GLib.GError as error:
+            msg = f"OCR PRESENTER: SCREEN get_extents failed: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            if notify_user:
+                presentation_manager.get_manager().present_message(
+                    "OCR: cannot determine focused window's screen position."
+                )
+            return True
         x, y, width, height = int(rect.x), int(rect.y), int(rect.width), int(rect.height)
         if width <= 0 or height <= 0:
             if notify_user:
@@ -251,12 +265,19 @@ class _OCRResultDialog:
     out of the widget the same way it reads any other accessible
     text component.
 
-    Phase 2.5: NumPad / (left), NumPad * (right), Enter / NumPad Enter
-    (left) synthesize a mouse click in the source window at the screen
-    position of the word currently under the caret -- not the line
-    center. A side table built at construction time maps each
-    text-buffer offset range to the OCRWord that produced it; the
-    click handler looks up the word at the current cursor offset.
+    Phase 2.6: dialog is non-modal and stays open after click. NumPad /
+    (left), NumPad * (right), Enter / NumPad Enter (left) invoke the
+    accessibility action on the UI element under the OCR'd word at the
+    caret. This is NOT a synthesized mouse event -- it is an AT-SPI
+    do_action invocation, which means:
+      - The OCR dialog never has to move or close.
+      - Z-order and modal grabs don't matter; the action goes straight
+        to the target accessible's implementation.
+      - The user can click many things in sequence without re-running
+        OCR. Escape closes the dialog; Orca+R re-recognizes.
+    Trade-off: only works for accessible targets. Truly inaccessible
+    apps (Electron, games, etc.) still need an XTest fallback, which
+    is the Phase 2.7 follow-up.
     """
 
     def __init__(
@@ -282,7 +303,9 @@ class _OCRResultDialog:
         dialog = Gtk.Dialog(
             title,
             None,
-            Gtk.DialogFlags.MODAL,
+            Gtk.DialogFlags(0),  # NOT modal: clicks via do_action need to
+                                 # route to the source window without us
+                                 # holding a grab.
             (
                 "Copy all", Gtk.ResponseType.APPLY,
                 Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE,
@@ -401,20 +424,18 @@ class _OCRResultDialog:
         best = min(self._word_offsets, key=lambda we: abs(we[0] - offset))
         return best[2]
 
-    # Milliseconds to wait after destroying the OCR dialog before
-    # synthesizing the click. On X11, Gtk.Widget.destroy() removes the
-    # widget tree synchronously but the X server's unmap-notify is
-    # asynchronous; if we click too early the XTest event lands on the
-    # still-mapped dialog (selecting our own TextView text) instead of
-    # the source window. 150ms is enough for the round-trip on every
-    # local-display setup we have tested; bump it if a slower setup
-    # ever surfaces the same symptom.
-    _CLICK_DELAY_MS = 150
+    # Action names we prefer for left- and right-click semantics, in
+    # priority order. Most accessibles expose either "click" or an
+    # equivalent localized name; we fall back to action index 0 if no
+    # named match is found.
+    _LEFT_ACTION_NAMES = ("click", "activate", "press", "jump", "open")
+    _RIGHT_ACTION_NAMES = ("menu", "popup", "show menu", "contextual menu")
 
     def _click_current_word(self, button: str) -> bool:
-        """Synthesize a mouse click at the screen center of the word at the caret.
+        """Invoke the accessibility action on the UI element under the caret's word.
 
-        Returns True so GTK stops propagating the keypress (we own it).
+        Dialog stays open. Returns True so GTK stops propagating the
+        keypress (we own it).
         """
 
         offset = self._current_cursor_offset()
@@ -429,77 +450,113 @@ class _OCRResultDialog:
             )
             return True
 
-        # Absolute screen center of the recognized word bbox.
-        screen_x = word.screen_x + word.width // 2
-        screen_y = word.screen_y + word.height // 2
-        action = "Right-click" if button == "b3c" else "Click"
-
-        # Snapshot everything we need before destroying the dialog --
-        # _source_window and the word coords are immutable; everything
-        # else lives on `self`, which becomes useless after destroy().
         source_window = self._source_window
-        word_text = word.text
 
-        # Pre-flight the source window so we can warn the user
-        # synchronously if the window has gone away. We re-fetch its
-        # rect inside the timeout so the click uses fresh coordinates
-        # (the window may have moved while the dialog was open).
+        # Re-fetch the source window's SCREEN rect at click time so we
+        # cope with windows that have moved since OCR. SCREEN coord
+        # type is mandatory here: WINDOW coord type returns (0, 0) for
+        # the top-level itself, which would silently break the math.
         try:
-            initial_rect = AXComponent.get_rect(source_window)
-        except Exception as error:
-            msg = f"OCR PRESENTER: Failed to read source window rect: {error}"
+            window_rect = Atspi.Component.get_extents(
+                source_window, Atspi.CoordType.SCREEN,
+            )
+        except GLib.GError as error:
+            msg = f"OCR PRESENTER: SCREEN get_extents failed at click: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
             presentation_manager.get_manager().present_message(
                 "OCR: source window no longer accessible."
             )
             return True
 
-        tokens = [
-            "OCR PRESENTER:", action,
-            f"on word {word_text!r}",
-            f"@ screen ({screen_x},{screen_y});",
-            f"OCR-time window origin ({self._buffer.capture_x},{self._buffer.capture_y});",
-            f"click-time window origin ({int(initial_rect.x)},{int(initial_rect.y)})",
-        ]
-        debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
+        # Center of the word bbox, screen coordinates.
+        screen_x = word.screen_x + word.width // 2
+        screen_y = word.screen_y + word.height // 2
+        # WINDOW-relative coords for get_accessible_at_point().
+        rel_x = screen_x - int(window_rect.x)
+        rel_y = screen_y - int(window_rect.y)
 
-        # Destroy the dialog first (synchronous unparent + queue
-        # destruction in GTK) so it cannot receive the synthesized
-        # click. The timeout gives X11 enough wall-clock to actually
-        # unmap the toplevel before XTest fires the button event.
-        self._gui.destroy()
-
-        def _do_click() -> bool:
-            try:
-                rect_now = AXComponent.get_rect(source_window)
-            except Exception as error:
-                msg = f"OCR PRESENTER: rect fetch failed in click callback: {error}"
-                debug.print_message(debug.LEVEL_WARNING, msg, True)
-                presentation_manager.get_manager().present_message(
-                    "OCR: source window no longer accessible."
-                )
-                return False
-
-            rel_x = screen_x - int(rect_now.x)
-            rel_y = screen_y - int(rect_now.y)
+        target = self._find_leaf_accessible_at(source_window, rel_x, rel_y)
+        if target is None:
+            presentation_manager.get_manager().present_message(
+                f"OCR: no accessible element under {word.text!r}."
+            )
             tokens = [
-                "OCR PRESENTER: firing", action,
-                f"at window-rel ({rel_x},{rel_y})",
-                f"on {AXObject.get_name(source_window)!r}",
+                "OCR PRESENTER: no accessible at window-rel",
+                f"({rel_x},{rel_y}) for word {word.text!r};",
+                "source window:", AXObject.get_name(source_window),
             ]
             debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
+            return True
 
-            ok = ax_device_manager.get_manager().generate_mouse_event(
-                source_window, rel_x, rel_y, button,
+        if button == "b3c":
+            ok = self._invoke_named_action(target, self._RIGHT_ACTION_NAMES)
+            verb = "Right-click"
+        else:
+            ok = self._invoke_named_action(target, self._LEFT_ACTION_NAMES)
+            verb = "Click"
+
+        target_name = AXObject.get_name(target) or AXObject.get_role_name(target) or "element"
+        if ok:
+            presentation_manager.get_manager().present_message(
+                f"{verb}: {target_name}"
             )
-            if not ok:
-                presentation_manager.get_manager().present_message(
-                    f"OCR: {action.lower()} did not reach the window."
-                )
-            return False
+        else:
+            presentation_manager.get_manager().present_message(
+                f"OCR: {verb.lower()} not supported on {target_name}."
+            )
 
-        GLib.timeout_add(self._CLICK_DELAY_MS, _do_click)
+        tokens = [
+            "OCR PRESENTER:", verb, "on", target,
+            f"for word {word.text!r}",
+            f"@ screen ({screen_x},{screen_y}) =",
+            f"window-rel ({rel_x},{rel_y});",
+            "result:", str(ok),
+        ]
+        debug.print_message(debug.LEVEL_INFO, " ".join(tokens), True)
         return True
+
+    @staticmethod
+    def _find_leaf_accessible_at(
+        root: Atspi.Accessible, x: int, y: int,
+    ) -> Atspi.Accessible | None:
+        """Descend the accessible tree to the deepest descendant at (x, y).
+
+        Coordinates are interpreted as Atspi.CoordType.WINDOW (constant
+        through the descent because WINDOW coords are relative to the
+        same top-level for every descendant).
+        """
+
+        current = AXComponent.get_object_at_point(root, x, y)
+        if current is None:
+            return None
+        # Recurse until get_object_at_point stops descending. Cap the
+        # depth to defend against pathological trees.
+        for _ in range(32):
+            child = AXComponent.get_object_at_point(current, x, y)
+            if child is None or child == current:
+                return current
+            current = child
+        return current
+
+    @staticmethod
+    def _invoke_named_action(
+        target: Atspi.Accessible, preferred_names: tuple[str, ...],
+    ) -> bool:
+        """Find an action whose name matches any preferred string, then invoke it.
+
+        Falls back to action index 0 if no name matches and at least one
+        action is exposed. Returns True if any action was invoked
+        successfully.
+        """
+
+        n = AXAction.get_n_actions(target)
+        if n <= 0:
+            return False
+        for i in range(n):
+            name = (AXAction.get_action_name(target, i) or "").strip().lower()
+            if name in preferred_names:
+                return AXAction.do_action(target, i)
+        return AXAction.do_action(target, 0)
 
     def show(self) -> None:
         self._gui.show_all()  # pylint: disable=no-member
