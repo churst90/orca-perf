@@ -76,6 +76,7 @@ from . import (
     dbus_service,
     debug,
     focus_manager,
+    gsettings_registry,
     guilabels,
     input_event,
     keybindings,
@@ -98,16 +99,35 @@ if TYPE_CHECKING:
 GROUP_LABEL = guilabels.KB_GROUP_OCR
 
 _MAX_CAPTURE_DIM = 4096
-_UPSCALE_FACTOR = 2.0
+# Default upscale factor + Tesseract language + confidence threshold.
+# All three are exposed as gsettings keys (see OCRPresenter class
+# decorations) so users can override via `gsettings set
+# org.gnome.Orca.OCR <key> <value>`. The defaults below are used only
+# when no dconf override is present.
+_DEFAULT_UPSCALE_FACTOR = 2.0
+_DEFAULT_LANG = "eng"
+_DEFAULT_CONFIDENCE = 30
 
 # (line_idx, word_idx, char_idx). char_idx is in [0, len(word.text)).
 Position = tuple[int, int, int]
 
 
+@gsettings_registry.get_registry().gsettings_schema(
+    "org.gnome.Orca.OCR", name="ocr",
+)
 class OCRPresenter(Extension):
     """OCR buffer with character cursor, selection, click pass-through."""
 
     GROUP_LABEL = GROUP_LABEL
+
+    # gsettings schema name (under org.gnome.Orca.OCR).
+    _SCHEMA = "ocr"
+
+    # User-tunable settings exposed via gsettings. Defaults match the
+    # module-level _DEFAULT_* constants above.
+    KEY_LANG = "lang"
+    KEY_UPSCALE_FACTOR = "upscale-factor"
+    KEY_CONFIDENCE_THRESHOLD = "confidence-threshold"
 
     # Maps every mode-gated handler attribute to its translated command
     # description in cmdnames. KP_Divide and KP_Enter both call
@@ -262,12 +282,21 @@ class OCRPresenter(Extension):
         if notify_user:
             self._say(messages.OCR_RECOGNIZING)
 
+        upscale_factor = self.get_upscale_factor()
+        lang = self.get_ocr_lang()
+        min_confidence = self.get_confidence_threshold()
+
         start = time.time()
         try:
             png = ocr_capture.capture_region(x, y, width, height)
-            png = ocr_capture.upscale_png(png, _UPSCALE_FACTOR)
+            png = ocr_capture.upscale_png(png, upscale_factor)
             words = ocr_engine.recognize(
-                png, capture_x=x, capture_y=y, upscale_factor=_UPSCALE_FACTOR,
+                png,
+                capture_x=x,
+                capture_y=y,
+                upscale_factor=upscale_factor,
+                lang=lang,
+                min_confidence=min_confidence,
             )
         except ocr_capture.OCRCaptureError as error:
             msg = f"OCR PRESENTER: Capture failed: {error}"
@@ -947,6 +976,63 @@ class OCRPresenter(Extension):
             )
             self._say(template % word.text)
         return True
+
+    # ---- settings -----------------------------------------------------
+
+    def _get_setting(self, key: str, gtype: str, default):
+        return gsettings_registry.get_registry().layered_lookup(
+            self._SCHEMA, key, gtype, default=default,
+        )
+
+    @gsettings_registry.get_registry().gsetting(
+        key=KEY_LANG,
+        schema="ocr",
+        gtype="s",
+        default="eng",
+        summary="OCR language code (Tesseract --lang argument, e.g. 'eng', 'fra')",
+    )
+    @dbus_service.getter
+    def get_ocr_lang(self) -> str:
+        """Returns the configured Tesseract language code."""
+
+        return self._get_setting(self.KEY_LANG, "s", _DEFAULT_LANG)
+
+    @gsettings_registry.get_registry().gsetting(
+        key=KEY_UPSCALE_FACTOR,
+        schema="ocr",
+        gtype="d",
+        default=2.0,
+        summary=(
+            "Bilinear upscale factor applied to captured pixels before OCR. "
+            "Values around 2.0-3.0 substantially improve recognition rate on "
+            "small UI text at the cost of ~50ms per recognition."
+        ),
+    )
+    @dbus_service.getter
+    def get_upscale_factor(self) -> float:
+        """Returns the configured pre-OCR upscale factor."""
+
+        return self._get_setting(
+            self.KEY_UPSCALE_FACTOR, "d", _DEFAULT_UPSCALE_FACTOR,
+        )
+
+    @gsettings_registry.get_registry().gsetting(
+        key=KEY_CONFIDENCE_THRESHOLD,
+        schema="ocr",
+        gtype="i",
+        default=30,
+        summary=(
+            "Minimum Tesseract word confidence (0-100) below which "
+            "recognized words are dropped as likely garbage."
+        ),
+    )
+    @dbus_service.getter
+    def get_confidence_threshold(self) -> int:
+        """Returns the configured minimum word confidence."""
+
+        return self._get_setting(
+            self.KEY_CONFIDENCE_THRESHOLD, "i", _DEFAULT_CONFIDENCE,
+        )
 
     # ---- introspection -----------------------------------------------
 

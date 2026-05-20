@@ -51,8 +51,9 @@ _WORD_LEVEL = 5
 # Words below this confidence are dropped. Tesseract reports confidence
 # as 0-100 (or -1 for items it couldn't classify). 30 is the threshold
 # below which words are usually garbage; tuned empirically by NVDA and
-# others on similar UI-text workloads.
-_MIN_CONFIDENCE = 30
+# others on similar UI-text workloads. Callers can override via the
+# `min_confidence` parameter to recognize() / _parse_tsv().
+_DEFAULT_MIN_CONFIDENCE = 30
 
 
 def is_available() -> bool:
@@ -68,6 +69,7 @@ def recognize(
     upscale_factor: float = 1.0,
     lang: str = "eng",
     timeout: float = 10.0,
+    min_confidence: int = _DEFAULT_MIN_CONFIDENCE,
 ) -> list[OCRWord]:
     """Run tesseract on the supplied PNG and return recognized words.
 
@@ -114,6 +116,7 @@ def recognize(
         capture_x=capture_x,
         capture_y=capture_y,
         upscale_factor=upscale_factor,
+        min_confidence=min_confidence,
     )
 
 
@@ -122,6 +125,7 @@ def _parse_tsv(
     capture_x: int,
     capture_y: int,
     upscale_factor: float,
+    min_confidence: int = _DEFAULT_MIN_CONFIDENCE,
 ) -> list[OCRWord]:
     lines = tsv.splitlines()
     if not lines:
@@ -157,7 +161,7 @@ def _parse_tsv(
             confidence = int(float(fields[col["conf"]]))
         except ValueError:
             continue
-        if confidence < _MIN_CONFIDENCE:
+        if confidence < min_confidence:
             continue
         try:
             left = int(fields[col["left"]])
