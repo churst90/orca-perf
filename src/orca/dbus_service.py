@@ -860,6 +860,132 @@ class OrcaRemoteController:
             return True
         return bool(result)
 
+    # ---- extension-facing helpers for the focused window ---------------
+
+    def get_active_window(self):
+        """Returns the Atspi.Accessible currently focused, or None.
+
+        Wrapper around focus_manager.get_manager().get_active_window() so
+        user extensions don't have to import focus_manager directly.
+        Returns Orca's own notion of "active window" -- the same window
+        that drives Orca's announcements -- not raw AT-SPI focus, which
+        differs in subtle toolkit-specific ways.
+        """
+
+        from . import focus_manager  # pylint: disable=import-outside-toplevel
+        return focus_manager.get_manager().get_active_window()
+
+    def get_active_window_screen_rect(self) -> "tuple[int, int, int, int] | None":
+        """Returns (x, y, width, height) of the active window in screen coords.
+
+        Returns None if no window is focused or the AT-SPI extents cannot
+        be read. Uses Atspi.CoordType.SCREEN explicitly so the rect's
+        origin is in real screen coordinates (CoordType.WINDOW returns
+        (0, 0) for a top-level -- a footgun every extension would
+        otherwise re-discover).
+        """
+
+        from gi.repository import Atspi, GLib  # pylint: disable=import-outside-toplevel
+        win = self.get_active_window()
+        if win is None:
+            return None
+        try:
+            rect = Atspi.Component.get_extents(win, Atspi.CoordType.SCREEN)
+        except GLib.Error as error:
+            msg = f"REMOTE CONTROLLER: get_extents failed: {error}"
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+            return None
+        return (int(rect.x), int(rect.y), int(rect.width), int(rect.height))
+
+    # ---- extension-facing helpers for the clipboard --------------------
+
+    def set_clipboard_text(self, text: str) -> bool:
+        """Places text on the system clipboard. Returns True on success."""
+
+        from . import clipboard  # pylint: disable=import-outside-toplevel
+        try:
+            clipboard.get_presenter().set_text(text)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = f"REMOTE CONTROLLER: set_clipboard_text failed: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return False
+        return True
+
+    def get_clipboard_text(self) -> str:
+        """Returns the current clipboard text, or '' if empty / unavailable."""
+
+        from . import clipboard  # pylint: disable=import-outside-toplevel
+        try:
+            presenter = clipboard.get_presenter()
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = f"REMOTE CONTROLLER: get_clipboard_text failed: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return ""
+        get = getattr(presenter, "get_text", None)
+        if get is None:
+            return ""
+        try:
+            return get() or ""
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = f"REMOTE CONTROLLER: get_clipboard_text failed: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return ""
+
+    # ---- extension-facing helper for synthesized mouse events ----------
+
+    _MOUSE_EVENT_CODES: "dict[str, str]" = {
+        "left":           "b1c",
+        "right":          "b3c",
+        "middle":         "b2c",
+        "double-left":    "b1d",
+        "double-right":   "b3d",
+        "left-press":     "b1p",
+        "left-release":   "b1r",
+        "right-press":    "b3p",
+        "right-release":  "b3r",
+        "move":           "abs",
+    }
+
+    def synthesize_mouse_event(
+        self, screen_x: int, screen_y: int, button: str = "left",
+    ) -> bool:
+        """Synthesize a mouse event at absolute screen coords.
+
+        `button` is one of: "left", "right", "middle", "double-left",
+        "double-right", "left-press", "left-release", "right-press",
+        "right-release", "move". Returns True on success.
+
+        Resolves the obj-relative coords the underlying AT-SPI device
+        API wants from the active window's SCREEN extents, so the
+        caller does not have to know about CoordType subtleties.
+        """
+
+        code = self._MOUSE_EVENT_CODES.get(button)
+        if code is None:
+            msg = f"REMOTE CONTROLLER: unknown mouse button '{button}'"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return False
+
+        win = self.get_active_window()
+        if win is None:
+            return False
+        rect = self.get_active_window_screen_rect()
+        if rect is None:
+            return False
+        wx, wy, _, _ = rect
+        rel_x = screen_x - wx
+        rel_y = screen_y - wy
+
+        from . import ax_device_manager  # pylint: disable=import-outside-toplevel
+        try:
+            return ax_device_manager.get_manager().generate_mouse_event(
+                win, rel_x, rel_y, code,
+            )
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = f"REMOTE CONTROLLER: synthesize_mouse_event failed: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return False
+
     def _publish_module(self, module_name: str, module_instance: object) -> None:
         """Builds the per-module D-Bus interface and publishes it on the bus."""
 
