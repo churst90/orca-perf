@@ -897,6 +897,25 @@ EXTENSIONS_ABOUT_PATH = _("Path")
 # the extension hasn't been tampered with since approval.
 EXTENSIONS_ABOUT_SHA256 = _("SHA256")
 
+# Translators: Title of the per-extension Settings dialog opened when
+# the user clicks Settings... on the Extensions preferences page.
+# %s is replaced with the extension's display name.
+EXTENSIONS_SETTINGS_DIALOG_TITLE = _("%s Settings")
+
+# Translators: Error shown when an extension whose manifest declares
+# style="dialog" returns an empty list from get_preference_controls.
+# %s is the extension's display name.
+EXTENSIONS_SETTINGS_EMPTY = _(
+    "%s declares preferences but did not provide any controls."
+)
+
+# Translators: Error shown when an extension's get_preference_controls
+# method raises an exception while being called.
+EXTENSIONS_SETTINGS_LOAD_FAILED = _(
+    "Failed to load this extension's settings. Check the orca log "
+    "for details."
+)
+
 # Translators: Orca's preferences can be configured on a per-application basis,
 # allowing users to customize Orca's behavior, keybindings, etc. to work one
 # way in LibreOffice and another way in a chat application. This string is the

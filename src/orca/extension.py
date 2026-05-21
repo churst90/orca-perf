@@ -22,12 +22,31 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from . import command_manager, dbus_service, debug
 
 if TYPE_CHECKING:
     from .command import Command
+
+
+# Recognized values for `[preferences].style` in manifest.toml.
+#
+# - PREFERENCES_STYLE_DIALOG: the Extensions preferences panel adds a
+#   Settings... button that opens a modal dialog. The extension
+#   implements get_preference_controls() to return the list of
+#   *PreferenceControl dataclasses (from preferences_grid_base) that
+#   the dialog should render.
+# - PREFERENCES_STYLE_CATEGORY: the extension implements
+#   create_preferences_grid() the same way built-in panels do, and
+#   the result becomes its own sidebar entry. Not yet implemented.
+PREFERENCES_STYLE_DIALOG = "dialog"
+PREFERENCES_STYLE_CATEGORY = "category"
+
+PREFERENCES_STYLES: frozenset[str] = frozenset({
+    PREFERENCES_STYLE_DIALOG,
+    PREFERENCES_STYLE_CATEGORY,
+})
 
 
 class Extension:
@@ -92,6 +111,23 @@ class Extension:
 
     def _get_commands(self) -> list[Command]:
         """Override to provide commands for registration."""
+
+        return []
+
+    def get_preference_controls(self) -> list[Any]:
+        """Override to declare preferences for the Settings... dialog.
+
+        Returns a list of *PreferenceControl dataclasses from
+        preferences_grid_base (BooleanPreferenceControl,
+        IntRangePreferenceControl, FloatRangePreferenceControl,
+        EnumPreferenceControl, etc.). Each control's getter/setter
+        pair is responsible for reading and writing the underlying
+        value (typically via gsettings_registry).
+
+        The Extensions preferences panel uses this method only when
+        the extension's manifest declares [preferences] style =
+        "dialog". Otherwise the Settings... button stays disabled.
+        """
 
         return []
 

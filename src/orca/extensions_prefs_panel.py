@@ -38,7 +38,14 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # pylint: disable=no-name-in-module
 
-from . import debug, extension_loader, guilabels, preferences_grid_base
+from . import (
+    debug,
+    extension,
+    extension_loader,
+    guilabels,
+    preferences_grid_base,
+    profile_manager,
+)
 
 if TYPE_CHECKING:
     from .extension import Extension
@@ -68,6 +75,7 @@ class _ExtensionInfo:
     approved_hash: str | None
     is_disabled: bool
     instance: "Extension | None"
+    preferences_style: str | None = None
 
 
 class ExtensionsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
@@ -287,7 +295,7 @@ class ExtensionsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
         disabled = set(self._loader.get_disabled_extensions())
         live_by_module: dict[str, "Extension"] = {
             ext.module_name: ext
-            for ext in getattr(self._loader, "_user_extensions", [])
+            for ext in self._loader.get_user_extensions()
             if ext.module_name
         }
 
@@ -338,6 +346,7 @@ class ExtensionsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
 
         ext_section = manifest.get("extension", {}) or {}
         entry_section = manifest.get("entry", {}) or {}
+        prefs_section = manifest.get("preferences", {}) or {}
 
         display = (
             ext_section.get("display-name")
@@ -349,6 +358,20 @@ class ExtensionsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
         approved_hash = approved.get(dir_name)
         state = _approval_state(current_hash, approved_hash)
         is_disabled = bool(module_name and module_name in disabled)
+
+        # Validate manifest's preferences.style. Unrecognized styles
+        # are dropped silently with a debug warning so an extension
+        # that asks for "category" (not yet implemented) doesn't get
+        # treated as if it asked for "dialog".
+        preferences_style: str | None = prefs_section.get("style")
+        if preferences_style is not None and preferences_style not in extension.PREFERENCES_STYLES:
+            debug.print_message(
+                debug.LEVEL_WARNING,
+                f"EXTENSIONS PREFS: {dir_name} manifest declares unknown "
+                f"preferences.style='{preferences_style}'; ignoring",
+                True,
+            )
+            preferences_style = None
 
         return _ExtensionInfo(
             dir_name=dir_name,
@@ -366,6 +389,7 @@ class ExtensionsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
             approved_hash=approved_hash,
             is_disabled=is_disabled,
             instance=live_by_module.get(module_name) if module_name else None,
+            preferences_style=preferences_style,
         )
 
     def _info_from_single_file(
@@ -444,8 +468,15 @@ class ExtensionsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
         has = ext is not None
         self._uninstall_btn.set_sensitive(has and ext.is_package)
         self._about_btn.set_sensitive(has)
-        # Stage 4 (per-extension settings dialog) not yet implemented.
-        self._settings_btn.set_sensitive(False)
+        # Settings is reachable when the extension is loaded AND
+        # declares preferences.style="dialog" in its manifest. Other
+        # styles ("category") aren't implemented yet; if/when they
+        # are, this gate widens.
+        self._settings_btn.set_sensitive(
+            has
+            and ext.instance is not None
+            and ext.preferences_style == extension.PREFERENCES_STYLE_DIALOG
+        )
         self._toggle_btn.set_sensitive(has and ext.module_name is not None)
 
         if ext is not None:
@@ -653,10 +684,66 @@ class ExtensionsPreferencesGrid(preferences_grid_base.PreferencesGridBase):
         dialog.destroy()
 
     def _on_settings_clicked(self, _btn: Gtk.Button) -> None:
-        # Stage 4 placeholder. Button stays insensitive until an extension
-        # declares preferences in its manifest. Implementing the manifest
-        # opt-in is the next deliverable after this panel ships.
-        pass
+        ext = self._get_selected()
+        if (
+            ext is None
+            or ext.instance is None
+            or ext.preferences_style != extension.PREFERENCES_STYLE_DIALOG
+        ):
+            return
+
+        try:
+            controls = ext.instance.get_preference_controls()
+        except Exception as error:
+            debug.print_message(
+                debug.LEVEL_WARNING,
+                f"EXTENSIONS PREFS: {ext.module_name} "
+                f"get_preference_controls raised: {error}",
+                True,
+            )
+            self._error_dialog(guilabels.EXTENSIONS_SETTINGS_LOAD_FAILED)
+            return
+        if not controls:
+            self._error_dialog(
+                guilabels.EXTENSIONS_SETTINGS_EMPTY % ext.display_name,
+            )
+            return
+
+        grid = preferences_grid_base.AutoPreferencesGrid(
+            ext.display_name, controls,
+        )
+        grid.show_all()
+
+        dialog, _ok_button = self._create_header_bar_dialog(
+            title=guilabels.EXTENSIONS_SETTINGS_DIALOG_TITLE % ext.display_name,
+            cancel_label=guilabels.DIALOG_CANCEL,
+            ok_label=guilabels.BTN_SAVE,
+        )
+        dialog.get_content_area().pack_start(grid, True, True, 0)
+
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            try:
+                profile = profile_manager.get_manager().get_active_profile()
+                grid.save_settings(profile, "")
+            except Exception as error:
+                debug.print_message(
+                    debug.LEVEL_WARNING,
+                    f"EXTENSIONS PREFS: save settings for "
+                    f"{ext.module_name} failed: {error}",
+                    True,
+                )
+        else:
+            try:
+                grid.revert_changes()
+            except Exception as error:
+                debug.print_message(
+                    debug.LEVEL_WARNING,
+                    f"EXTENSIONS PREFS: revert changes for "
+                    f"{ext.module_name} failed: {error}",
+                    True,
+                )
+        dialog.destroy()
 
     # ---- Runtime enable/disable helpers ------------------------------
 

@@ -267,6 +267,16 @@ class ExtensionLoader:
 
         self._builtins.append((getter, group_label))
 
+    def get_user_extensions(self) -> list[Extension]:
+        """Returns the list of loaded user extensions.
+
+        Used by the preferences UI so it doesn't have to reach into the
+        loader's private state to find which extensions are currently
+        live (and therefore eligible for runtime enable/disable).
+        """
+
+        return list(self._user_extensions)
+
     def discover_and_load(self, extensions_dir: str) -> None:
         """Scans the extensions directory and loads approved user extensions.
 
