@@ -702,8 +702,12 @@ class ExtensionLoader:
                 return None
 
             module = importlib.util.module_from_spec(spec)
+            # The module must be in sys.modules before exec_module so that code run during
+            # class creation (e.g. @dataclass) can look itself up via sys.modules[__name__].
+            sys.modules[module_name] = module
             spec.loader.exec_module(module)
         except Exception as error:  # pylint: disable=broad-exception-caught
+            sys.modules.pop(module_name, None)
             msg = f"EXTENSION LOADER: Failed to load {filepath}: {error}"
             debug.print_message(debug.LEVEL_WARNING, msg, True)
             return None
