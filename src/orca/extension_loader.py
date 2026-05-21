@@ -209,18 +209,62 @@ class ExtensionLoader:
 
             os.makedirs(extensions_dir, exist_ok=True)
             dest_dir = os.path.join(extensions_dir, name)
+
+            # Idempotent re-install: if a previous version of this
+            # extension is already there, swap it out atomically.
+            # Atomic = rename old aside, copy new in, then delete old.
+            # If the copy fails we restore the old dir so a partial
+            # update never leaves a half-installed extension behind.
+            # Anything in dest_dir that DOESN'T look like an extension
+            # (no manifest.toml) is refused to avoid clobbering
+            # unrelated files an end user may have stashed there.
+            backup_dir: str | None = None
             if os.path.exists(dest_dir):
-                return None, (
-                    f"destination {dest_dir} already exists; "
-                    f"uninstall first or use a different name"
-                )
+                if not os.path.isfile(os.path.join(dest_dir, "manifest.toml")):
+                    return None, (
+                        f"destination {dest_dir} exists but does not look "
+                        f"like an installed extension (no manifest.toml). "
+                        f"Refusing to overwrite; remove it manually first."
+                    )
+                backup_dir = dest_dir + ".pre-install"
+                # Clear any leftover backup from a previous aborted
+                # install so the rename below can't fail.
+                if os.path.exists(backup_dir):
+                    try:
+                        shutil.rmtree(backup_dir)
+                    except OSError:
+                        pass
+                try:
+                    os.rename(dest_dir, backup_dir)
+                except OSError as error:
+                    return None, (
+                        f"could not move existing install aside: {error}"
+                    )
 
             try:
                 shutil.copytree(source_dir, dest_dir)
             except OSError as error:
+                # Restore the backup if we displaced one.
+                if backup_dir is not None and os.path.exists(backup_dir):
+                    try:
+                        if os.path.exists(dest_dir):
+                            shutil.rmtree(dest_dir)
+                        os.rename(backup_dir, dest_dir)
+                    except OSError:
+                        pass
                 return None, f"copy to {dest_dir} failed: {error}"
 
-        # Auto-approve the freshly installed extension.
+            # Success: dispose of the backup.
+            if backup_dir is not None and os.path.exists(backup_dir):
+                try:
+                    shutil.rmtree(backup_dir)
+                except OSError:
+                    pass
+
+        # Auto-approve the freshly installed extension (re-approve in
+        # the upgrade case so the new file set's hash is what's
+        # recorded -- approval is keyed on the package's content hash,
+        # so an upgrade legitimately changes it).
         self.approve_package_extension(dest_dir)
         return name, None
 
