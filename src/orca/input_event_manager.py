@@ -136,6 +136,47 @@ class InputEventManager:
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return False
 
+        # Give registered keyboard_event subscribers first crack at
+        # the event. A subscriber that returns True consumes the
+        # event from Orca's perspective: we skip event.process() so
+        # Orca's command dispatch doesn't fire on it. Used by
+        # orca-remote for master-side key forwarding and by any
+        # extension that wants to observe / intercept keys.
+        # Importantly we still update _last_input_event below so a
+        # follow-up release for a consumed press doesn't desync the
+        # duplicate-event check.
+        try:
+            # Lazy import to keep this module's import graph small;
+            # dbus_service pulls in dasbus / dbus which we don't want
+            # to load just to declare this module.
+            from . import dbus_service  # pylint: disable=import-outside-toplevel
+            consumed = dbus_service.get_remote_controller().emit_keyboard_event(
+                pressed, keycode, keysym, modifiers, text,
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            debug.print_message(
+                debug.LEVEL_WARNING,
+                f"INPUT EVENT MANAGER: keyboard_event dispatch failed: {error}",
+                True,
+            )
+            consumed = False
+        if consumed:
+            debug.print_message(
+                debug.LEVEL_INFO,
+                "INPUT EVENT MANAGER: Event consumed by extension subscriber.",
+                True,
+            )
+            # Mirror the bookkeeping we do at the bottom of normal
+            # processing so the duplicate-event check above stays
+            # consistent across consumed-press / consumed-release.
+            if not event.is_modifier_key():
+                self._previous_non_modifier_key_event = (
+                    self._last_non_modifier_key_event
+                )
+                self._last_non_modifier_key_event = event
+            self._last_input_event = event
+            return False
+
         manager = focus_manager.get_manager()
         if pressed:
             window = manager.get_active_window()

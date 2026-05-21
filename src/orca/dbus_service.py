@@ -699,6 +699,20 @@ class OrcaRemoteController:
         # the slave's braille buffer to a remote master without
         # monkey-patching braille.py.
         self._braille_emitted_subscribers: "list[Callable[[str, int], None]]" = []
+        # keyboard_event subscribers. input_event_manager.process_
+        # keyboard_event calls emit_keyboard_event() BEFORE running
+        # Orca's normal command dispatch. A subscriber that returns
+        # True consumes the event from Orca's perspective: Orca skips
+        # its own dispatch chain. Used by orca-remote for master-side
+        # key forwarding and by extensions that want to observe or
+        # intercept keystrokes (macro recorders, custom keybindings,
+        # snippet hotkeys). LIMITATION: this is Orca-dispatch consume
+        # only. The key still reaches the focused application via the
+        # X server -- true system-level consume requires
+        # Atspi.Device.add_key_grab per-keysym (see command_manager).
+        self._keyboard_event_subscribers: (
+            "list[Callable[[bool, int, int, int, str], bool]]"
+        ) = []
 
     def subscribe_speech_emitted(
         self, callback: "Callable[[str, str, str], None]",
@@ -795,6 +809,81 @@ class OrcaRemoteController:
                     f"{callback!r} raised: {error}"
                 )
                 debug.print_message(debug.LEVEL_WARNING, msg, True)
+
+    def subscribe_keyboard_event(
+        self,
+        callback: "Callable[[bool, int, int, int, str], bool]",
+    ) -> None:
+        """Subscribe to inbound keyboard events with optional consume.
+
+        `callback(pressed, keycode, keysym, modifiers, text) -> bool`
+        is invoked once per key event (press AND release), BEFORE
+        Orca's normal command dispatch. Return True to consume the
+        event from Orca's perspective (Orca's command dispatch is
+        skipped for that event). Return False to pass through unchanged.
+
+        Subscribers run in FIFO registration order; the first to
+        return True wins -- subsequent subscribers do not see the
+        event. Exceptions are logged and swallowed; a bad subscriber
+        is treated as having returned False.
+
+        LIMITATION: this is Orca-side consume only. The key still
+        reaches the focused application via the X server. AT-SPI's
+        true consume semantics belong to `Atspi.Device.add_key_grab`,
+        which is per-keysym; subscribers wanting full system-level
+        consume should additionally drive grabs via the
+        command_manager / keybindings layer.
+
+        Use cases this enables for any extension:
+        - Master-side key forwarding (orca-remote).
+        - Macro recorders observing chord activity.
+        - Custom per-app key remapping.
+        - Snippet expansion hotkeys.
+        - Modal text-input editors.
+        """
+
+        if callback not in self._keyboard_event_subscribers:
+            self._keyboard_event_subscribers.append(callback)
+
+    def unsubscribe_keyboard_event(
+        self,
+        callback: "Callable[[bool, int, int, int, str], bool]",
+    ) -> None:
+        """Remove a previously-subscribed keyboard_event callback."""
+
+        if callback in self._keyboard_event_subscribers:
+            self._keyboard_event_subscribers.remove(callback)
+
+    def emit_keyboard_event(
+        self,
+        pressed: bool,
+        keycode: int,
+        keysym: int,
+        modifiers: int,
+        text: str,
+    ) -> bool:
+        """Fire keyboard_event at every subscriber until one consumes.
+
+        Returns True if any subscriber consumed the event (caller
+        should skip its own dispatch); False if none did (caller
+        should proceed normally).
+        """
+
+        if not self._keyboard_event_subscribers:
+            return False
+        # Snapshot in case a callback unsubscribes itself or another
+        # mid-iteration.
+        for callback in list(self._keyboard_event_subscribers):
+            try:
+                if callback(pressed, keycode, keysym, modifiers, text):
+                    return True
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                msg = (
+                    f"REMOTE CONTROLLER: keyboard_event subscriber "
+                    f"{callback!r} raised: {error}"
+                )
+                debug.print_message(debug.LEVEL_WARNING, msg, True)
+        return False
 
     def start(self) -> bool:
         """Starts the D-Bus service."""

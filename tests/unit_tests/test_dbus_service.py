@@ -1378,6 +1378,198 @@ class TestRemoteControllerInternalAPIs:
 
 
 @pytest.mark.unit
+class TestKeyboardEventSubscribe:
+    """Subscribe/dispatch contract for the extension keyboard-event API."""
+
+    def test_no_subscribers_returns_false(self, test_context: OrcaTestContext) -> None:
+        """emit_keyboard_event returns False when no one has subscribed."""
+
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        assert controller.emit_keyboard_event(True, 38, 0x61, 0, "a") is False
+
+    def test_subscriber_receives_event_and_passthrough(
+        self, test_context: OrcaTestContext
+    ) -> None:
+        """A subscriber returning False sees the event but doesn't consume."""
+
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        seen: list[tuple] = []
+
+        def cb(pressed, keycode, keysym, modifiers, text):
+            seen.append((pressed, keycode, keysym, modifiers, text))
+            return False
+
+        controller.subscribe_keyboard_event(cb)
+        assert controller.emit_keyboard_event(True, 38, 0x61, 0, "a") is False
+        assert seen == [(True, 38, 0x61, 0, "a")]
+
+    def test_subscriber_consume_returns_true(self, test_context: OrcaTestContext) -> None:
+        """A subscriber returning True causes emit to return True."""
+
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        controller.subscribe_keyboard_event(lambda *_: True)
+        assert controller.emit_keyboard_event(True, 38, 0x61, 0, "a") is True
+
+    def test_fifo_order_first_true_wins(self, test_context: OrcaTestContext) -> None:
+        """Subscribers run in FIFO; later subscribers don't see a consumed event."""
+
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        first_seen: list[bool] = []
+        second_seen: list[bool] = []
+
+        def first(_p, _kc, _ks, _m, _t):
+            first_seen.append(True)
+            return True  # consume
+
+        def second(_p, _kc, _ks, _m, _t):
+            second_seen.append(True)
+            return False
+
+        controller.subscribe_keyboard_event(first)
+        controller.subscribe_keyboard_event(second)
+        assert controller.emit_keyboard_event(True, 38, 0x61, 0, "a") is True
+        assert first_seen == [True]
+        # second should not have been called because first consumed.
+        assert second_seen == []
+
+    def test_subscriber_exception_treated_as_passthrough(
+        self, test_context: OrcaTestContext
+    ) -> None:
+        """A subscriber that raises is logged-and-skipped; iteration continues."""
+
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        second_called: list[bool] = []
+
+        def boom(*_):
+            raise RuntimeError("kaboom")
+
+        def good(*_):
+            second_called.append(True)
+            return True
+
+        controller.subscribe_keyboard_event(boom)
+        controller.subscribe_keyboard_event(good)
+        assert controller.emit_keyboard_event(True, 38, 0x61, 0, "a") is True
+        assert second_called == [True]
+
+    def test_unsubscribe_stops_delivery(self, test_context: OrcaTestContext) -> None:
+        """unsubscribe_keyboard_event removes the callback."""
+
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        calls: list[bool] = []
+
+        def cb(*_):
+            calls.append(True)
+            return False
+
+        controller.subscribe_keyboard_event(cb)
+        controller.emit_keyboard_event(True, 38, 0x61, 0, "a")
+        controller.unsubscribe_keyboard_event(cb)
+        controller.emit_keyboard_event(False, 38, 0x61, 0, "a")
+        assert len(calls) == 1
+
+    def test_double_subscribe_is_idempotent(self, test_context: OrcaTestContext) -> None:
+        """Subscribing the same callback twice doesn't double-fire it."""
+
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        calls: list[bool] = []
+
+        def cb(*_):
+            calls.append(True)
+            return False
+
+        controller.subscribe_keyboard_event(cb)
+        controller.subscribe_keyboard_event(cb)
+        controller.emit_keyboard_event(True, 38, 0x61, 0, "a")
+        assert len(calls) == 1
+
+
+@pytest.mark.unit
+class TestBrailleEmittedSubscribe:
+    """Subscribe/dispatch contract for braille_emitted (sibling of speech_emitted)."""
+
+    def test_no_subscribers_is_noop(self, test_context: OrcaTestContext) -> None:
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        # Should not raise even with no subscribers.
+        controller.emit_braille_emitted("hello", 0)
+
+    def test_subscriber_receives_text_and_cursor(
+        self, test_context: OrcaTestContext
+    ) -> None:
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        seen: list[tuple] = []
+
+        def cb(text, cursor):
+            seen.append((text, cursor))
+
+        controller.subscribe_braille_emitted(cb)
+        controller.emit_braille_emitted("foo", 2)
+        controller.emit_braille_emitted("bar", -1)
+        assert seen == [("foo", 2), ("bar", -1)]
+
+    def test_unsubscribe(self, test_context: OrcaTestContext) -> None:
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        calls: list[tuple] = []
+
+        def cb(text, cursor):
+            calls.append((text, cursor))
+
+        controller.subscribe_braille_emitted(cb)
+        controller.emit_braille_emitted("a", 0)
+        controller.unsubscribe_braille_emitted(cb)
+        controller.emit_braille_emitted("b", 0)
+        assert calls == [("a", 0)]
+
+    def test_subscriber_exception_swallowed(self, test_context: OrcaTestContext) -> None:
+        _stub_orca_internals(test_context)
+        from orca import dbus_service
+
+        controller = dbus_service.OrcaRemoteController()
+        good_called: list[bool] = []
+
+        def boom(_t, _c):
+            raise RuntimeError("kaboom")
+
+        def good(_t, _c):
+            good_called.append(True)
+
+        controller.subscribe_braille_emitted(boom)
+        controller.subscribe_braille_emitted(good)
+        controller.emit_braille_emitted("hello", 0)
+        assert good_called == [True]
+
+
+@pytest.mark.unit
 class TestRemoteControllerLifecycle:
     """Controller queues registrations until the bus is up."""
 
