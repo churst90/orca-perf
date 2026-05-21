@@ -166,8 +166,13 @@ class TestSpeechGeneratorMisspelledIndicator:
         generator = SpeechGenerator(test_context.Mock())
         generator.voice = test_context.Mock(return_value=[])
         generator._context = context
+        # Perf-branch adaptation: _generate_text_with_attribute_changes
+        # still carries the `args` positional that upstream removed in
+        # e9f5eeb4d ("Remove **args from the generator and presentation
+        # functions"). Pass an empty dict here. When perf-branch
+        # eventually merges that refactor, this argument can be dropped.
         return generator._generate_text_with_attribute_changes(
-            test_context.Mock(), 0, 3, announce_formatting=False
+            test_context.Mock(), 0, 3, {}, announce_formatting=False
         )
 
     def test_misspelled_omitted_when_indicator_disabled(
