@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import functools
 import threading
 import time
 from enum import Enum
@@ -107,6 +108,35 @@ class StructuralNavigator(Extension):
         )
 
     GROUP_LABEL = guilabels.KB_GROUP_STRUCTURAL_NAVIGATION
+
+    @staticmethod
+    def navigation_command(func):
+        """Decorator that logs the command, then dispatches to it.
+
+        Mirrors the decorator JD added in caret_navigator /
+        math_navigator / object_navigator / table_navigator. Applies
+        only to the handful of structural-navigator commands that
+        AREN'T routed through the generic _dispatch_{previous,next,
+        list} pipeline -- the per-element-type shims already log
+        inside the dispatcher and don't need the wrapper.
+        """
+
+        @functools.wraps(func)
+        def wrapper(self, script, event=None, notify_user=True) -> bool:
+            tokens = [
+                "STRUCTURAL NAVIGATOR:",
+                func,
+                "\nScript:",
+                script,
+                "\nEvent:",
+                event,
+                "\nnotify_user:",
+                notify_user,
+            ]
+            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+            return func(self, script, event, notify_user)
+
+        return wrapper
 
     def __init__(self) -> None:
         self._last_input_event: InputEvent | None = None
@@ -876,6 +906,7 @@ class StructuralNavigator(Extension):
         return True
 
     @dbus_service.command
+    @navigation_command
     def cycle_mode(
         self,
         script: default.Script,
@@ -883,16 +914,6 @@ class StructuralNavigator(Extension):
         notify_user: bool = True,
     ) -> bool:
         """Cycles among the structural navigation modes."""
-
-        tokens = [
-            "STRUCTURAL NAVIGATOR: cycle_mode. Script:",
-            script,
-            "Event:",
-            event,
-            "notify_user:",
-            notify_user,
-        ]
-        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
         if not (script and self._is_active_script(script)):
             return False
@@ -2488,6 +2509,7 @@ class StructuralNavigator(Extension):
 
         return self._dispatch_next("live_region", script, event, notify_user)
 
+    @navigation_command
     def _last_live_region(
         self,
         script: default.Script,
@@ -2495,16 +2517,6 @@ class StructuralNavigator(Extension):
         notify_user: bool = True,
     ) -> bool:
         """Goes to the last live region."""
-
-        tokens = [
-            "STRUCTURAL NAVIGATOR: last_live_region. Script:",
-            script,
-            "Event:",
-            event,
-            "notify_user:",
-            notify_user,
-        ]
-        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
         self._last_input_event = event
         live_region_presenter.get_presenter().go_last_live_region(script, event)
@@ -2951,6 +2963,7 @@ class StructuralNavigator(Extension):
         return container
 
     @dbus_service.command
+    @navigation_command
     def container_start(
         self,
         script: default.Script,
@@ -2958,16 +2971,6 @@ class StructuralNavigator(Extension):
         notify_user: bool = True,
     ) -> bool:
         """Moves to the start of the current container."""
-
-        tokens = [
-            "STRUCTURAL NAVIGATOR: container_start. Script:",
-            script,
-            "Event:",
-            event,
-            "notify_user:",
-            notify_user,
-        ]
-        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
         self._last_input_event = event
         container = self._get_current_container(script)
@@ -2981,6 +2984,7 @@ class StructuralNavigator(Extension):
         return True
 
     @dbus_service.command
+    @navigation_command
     def container_end(
         self,
         script: default.Script,
@@ -2988,16 +2992,6 @@ class StructuralNavigator(Extension):
         notify_user: bool = True,
     ) -> bool:
         """Moves to the end of the current container."""
-
-        tokens = [
-            "STRUCTURAL NAVIGATOR: container_end. Script:",
-            script,
-            "Event:",
-            event,
-            "notify_user:",
-            notify_user,
-        ]
-        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
         self._last_input_event = event
         container = self._get_current_container(script)
