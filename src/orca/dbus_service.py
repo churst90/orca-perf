@@ -1158,6 +1158,63 @@ class OrcaRemoteController:
 
         return self._modal_extension
 
+    def synthesize_key_event(self, keysym: int, pressed: bool) -> bool:
+        """Synthesize a keyboard event via AT-SPI.
+
+        `keysym` is an X11 keysym (e.g. 0xff0d for Return, 0x61 for
+        lowercase 'a'). `pressed` is True for press, False for
+        release. Callers wanting a press/release pair should call
+        twice. Returns True on success.
+
+        AT-SPI's PRESS / RELEASE synth types interpret their first
+        argument as a hardware keycode, not a keysym. We translate
+        the supplied keysym to the current keymap's keycode via
+        Gdk.Keymap so modifier-chord semantics work (caller can hold
+        a modifier across a chord key by pressing then releasing in
+        the correct order). Keysyms that don't appear in the active
+        keymap return False; callers can log and skip those.
+        """
+
+        try:
+            import gi  # pylint: disable=import-outside-toplevel
+            gi.require_version("Atspi", "2.0")
+            gi.require_version("Gdk", "3.0")
+            from gi.repository import Atspi, Gdk  # pylint: disable=import-outside-toplevel
+
+            display = Gdk.Display.get_default()
+            if display is None:
+                msg = (
+                    "REMOTE CONTROLLER: synthesize_key_event: "
+                    "no default Gdk display"
+                )
+                debug.print_message(debug.LEVEL_WARNING, msg, True)
+                return False
+            keymap = Gdk.Keymap.get_for_display(display)
+            found, entries = keymap.get_entries_for_keyval(keysym)
+            if not found or not entries:
+                msg = (
+                    f"REMOTE CONTROLLER: synthesize_key_event: "
+                    f"keysym 0x{keysym:x} not in active keymap"
+                )
+                debug.print_message(debug.LEVEL_WARNING, msg, True)
+                return False
+            keycode = entries[0].keycode
+
+            synth = (
+                Atspi.KeySynthType.PRESS
+                if pressed
+                else Atspi.KeySynthType.RELEASE
+            )
+            Atspi.generate_keyboard_event(keycode, None, synth)
+            return True
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = (
+                f"REMOTE CONTROLLER: synthesize_key_event "
+                f"(keysym=0x{keysym:x}, pressed={pressed}) failed: {error}"
+            )
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return False
+
     def synthesize_mouse_event(
         self, screen_x: int, screen_y: int, button: str = "left",
     ) -> bool:
