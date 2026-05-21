@@ -2370,14 +2370,31 @@ def _init_flash(flash_time: int) -> None:
         _STATE.flash_event_source_id = _FLASH_EVENT_SOURCE_ID_INDEFINITE
 
 
-def display_message(message: str, flash_time: int = 0) -> None:
-    """Display a message for the specified amount of time."""
+def display_message(
+    message: str,
+    flash_time: int = 0,
+    cursor_offset: int = -1,
+) -> None:
+    """Display a message for the specified amount of time.
 
-    msg = f"BRAILLE: Display message: '{message}' (flash_time: {flash_time})"
+    `cursor_offset` is the 0-based index of the braille cursor
+    within `message`, or -1 if no cursor should be shown. Default
+    -1 preserves the legacy signature so existing callers keep
+    working unchanged.
+
+    `flash_time` > 0 restores the previous state after that many
+    ms; flash_time = 0 displays until the next refresh writes
+    something else.
+    """
+
+    msg = (
+        f"BRAILLE: Display message: '{message}' "
+        f"(flash_time: {flash_time}, cursor_offset: {cursor_offset})"
+    )
     debug.print_message(debug.LEVEL_INFO, msg, True)
 
     _init_flash(flash_time)
-    region = Region(message, -1)
+    region = Region(message, cursor_offset)
     line = Line(region)
     display_line(line, region, stop_flash=False)
 

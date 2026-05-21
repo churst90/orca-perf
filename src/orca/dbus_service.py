@@ -885,6 +885,52 @@ class OrcaRemoteController:
                 debug.print_message(debug.LEVEL_WARNING, msg, True)
         return False
 
+    def display_braille_text(
+        self,
+        text: str,
+        cursor_cell: int = -1,
+        duration_ms: int | None = None,
+    ) -> bool:
+        """Push arbitrary text to the local BrlAPI display.
+
+        Bypasses the normal `braille.refresh` region-stack composition
+        and writes `text` directly via `braille.display_message`. The
+        text appears on the local braille display until either the
+        timeout expires (if `duration_ms` is set) or the next normal
+        braille refresh overwrites it.
+
+        `cursor_cell` is the 0-based index of the braille cursor
+        within `text`, or -1 for no cursor.
+
+        `duration_ms` > 0 restores the prior display state after that
+        many milliseconds (the existing flash mechanism). None / 0
+        means "display until the next refresh writes something else"
+        -- the right choice for a steady remote-braille mirror.
+
+        Returns True on success, False if braille is unavailable
+        (no BrlAPI session, no display attached) or the call raised.
+
+        Use cases this enables for any extension:
+        - Inbound braille mirroring (orca-remote master).
+        - Notification extensions flashing a transient line.
+        - Custom braille content (widgets, status, calculator output).
+        """
+
+        try:
+            from . import braille  # pylint: disable=import-outside-toplevel
+            braille.display_message(
+                text,
+                duration_ms if duration_ms is not None else 0,
+                cursor_offset=cursor_cell,
+            )
+            return True
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = (
+                f"REMOTE CONTROLLER: display_braille_text failed: {error}"
+            )
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+            return False
+
     def start(self) -> bool:
         """Starts the D-Bus service."""
 
