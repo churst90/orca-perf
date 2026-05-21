@@ -112,7 +112,36 @@ class AXObject:
     # Populated once-per-object from a freshly-fetched StateSet (at
     # which point we know the underlying object is alive). Invalidated
     # on any object:state-changed:* event.
+    #
+    # Transient state bits in _LL_CACHE_EXCLUDED_STATES are *not*
+    # cached. They change too frequently and are race-prone: the bit
+    # may flip on the AT-SPI side after we have already populated the
+    # cache from an earlier read, before the corresponding
+    # state-changed event has been dispatched to invalidate us. The
+    # "not selected, <row>" sidebar race in the prefs window is the
+    # canonical example -- SELECTED arrived after the focus event we
+    # read the state set for, so the cache stored "not selected" and
+    # subsequent reads within the same arrow-key handler returned
+    # stale. Querying AT-SPI directly for these bits costs a D-Bus
+    # round-trip per call but is the only correct path: AT-SPI's own
+    # cache catches up faster than ours because the daemon receives
+    # the state-changed signal before Orca does.
     LONG_LIVED_STATES: ClassVar[dict[int, frozenset[int]]] = {}
+
+    _LL_CACHE_EXCLUDED_STATES: ClassVar[frozenset[int]] = frozenset({
+        1,   # ACTIVE       -- window focus, flips on Alt-Tab
+        2,   # ARMED        -- button armed
+        3,   # BUSY         -- async loading
+        4,   # CHECKED      -- toggle/checkbox state
+        5,   # COLLAPSED    -- tree/expander state
+        10,  # EXPANDED     -- tree/expander state
+        12,  # FOCUSED      -- focus, races with focus-changed events
+        15,  # ICONIFIED    -- window minimized
+        20,  # PRESSED      -- button pressed
+        23,  # SELECTED     -- selection, races with selection-changed
+        32,  # INDETERMINATE -- tristate
+        36,  # INVALID_ENTRY -- form validation
+    })
 
     _LL_CACHE_MAX = 8000
 
@@ -1203,8 +1232,16 @@ class AXObject:
         # values means subsequent has_state() calls never need to touch
         # the StateSet object again, so a later defunct cannot cause a
         # stale-pointer dereference inside libatspi.
+        #
+        # Transient bits are excluded from the stored frozenset; see
+        # LONG_LIVED_STATES docstring for why. has_state() will see
+        # the absence and fall through to a fresh get_state_set call
+        # for those bits.
         try:
-            states_frozen = frozenset(int(s) for s in state_set.get_states())
+            states_frozen = frozenset(
+                int(s) for s in state_set.get_states()
+                if int(s) not in AXObject._LL_CACHE_EXCLUDED_STATES
+            )
         except (GLib.GError, TypeError, ValueError):
             states_frozen = None
         if states_frozen is not None:
@@ -1219,6 +1256,14 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return False
 
+        # Transient bits (FOCUSED, SELECTED, ACTIVE, ...) are not
+        # cacheable cross-event because state-changed events for them
+        # can race the populating get_state_set call. Always query
+        # AT-SPI directly for these. See LONG_LIVED_STATES docstring.
+        state_int = int(state)
+        if state_int in AXObject._LL_CACHE_EXCLUDED_STATES:
+            return AXObject.get_state_set(obj).contains(state)
+
         # LL fast path: no StateSet dereference, so a defunct object
         # between the cache write and this read cannot crash libatspi.
         key = hash(obj)
@@ -1226,7 +1271,7 @@ class AXObject:
             cached_states = AXObject.LONG_LIVED_STATES.get(key)
         if cached_states is not None:
             AXObject._record_ll_hit()
-            return int(state) in cached_states
+            return state_int in cached_states
 
         return AXObject.get_state_set(obj).contains(state)
 

@@ -3161,15 +3161,46 @@ class TestAXObject:
         obj = test_context.Mock(spec=Atspi.Accessible)
         test_context.patch_object(AXObject, "is_valid", side_effect=lambda o: True)
 
-        # Pre-populate the LL cache with the FOCUSED bit only.
-        AXObject.LONG_LIVED_STATES[hash(obj)] = frozenset({int(Atspi.StateType.FOCUSED)})
+        # Pre-populate the LL cache with a stable bit (EDITABLE). The cache
+        # only stores non-transient bits; querying a stable bit hits the
+        # cache, querying a different stable bit returns False (also from
+        # cache, no AT-SPI call).
+        AXObject.LONG_LIVED_STATES[hash(obj)] = frozenset({int(Atspi.StateType.EDITABLE)})
 
         get_state_set_mock = test_context.Mock(side_effect=AssertionError("must not run"))
         test_context.patch_object(AXObject, "get_state_set", new=get_state_set_mock)
 
-        assert AXObject.has_state(obj, Atspi.StateType.FOCUSED) is True
-        assert AXObject.has_state(obj, Atspi.StateType.EDITABLE) is False
+        assert AXObject.has_state(obj, Atspi.StateType.EDITABLE) is True
+        assert AXObject.has_state(obj, Atspi.StateType.SENSITIVE) is False
         get_state_set_mock.assert_not_called()
+        AXObject.LONG_LIVED_STATES.clear()
+
+    def test_has_state_bypasses_cache_for_transient_bits(
+        self,
+        test_context: OrcaTestContext,
+    ) -> None:
+        """Transient bits (FOCUSED, SELECTED, ...) must always query AT-SPI."""
+
+        self._setup_dependencies(test_context)
+        from orca.ax_object import AXObject
+
+        AXObject.LONG_LIVED_STATES.clear()
+        obj = test_context.Mock(spec=Atspi.Accessible)
+        test_context.patch_object(AXObject, "is_valid", side_effect=lambda o: True)
+
+        # Populate the cache deliberately for the test; has_state must
+        # still call get_state_set for transient bits even when an entry
+        # exists, because the cache cannot contain transient bits.
+        AXObject.LONG_LIVED_STATES[hash(obj)] = frozenset({int(Atspi.StateType.EDITABLE)})
+
+        state_set_mock = test_context.Mock()
+        state_set_mock.contains = test_context.Mock(return_value=True)
+        get_state_set_mock = test_context.Mock(return_value=state_set_mock)
+        test_context.patch_object(AXObject, "get_state_set", new=get_state_set_mock)
+
+        result = AXObject.has_state(obj, Atspi.StateType.SELECTED)
+        assert result is True
+        get_state_set_mock.assert_called_once_with(obj)
         AXObject.LONG_LIVED_STATES.clear()
 
     def test_has_state_falls_through_to_get_state_set_on_miss(
