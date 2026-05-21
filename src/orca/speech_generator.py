@@ -1779,7 +1779,7 @@ class SpeechGenerator(generator.Generator):
         if self._only_speak_displayed_text():
             return []
 
-        result = super()._generate_tree_item_level(obj, new_only=True)
+        result = super()._generate_tree_item_level(obj)
         if result:
             result.extend(self.voice(SYSTEM, obj=obj))
         return result
@@ -1847,10 +1847,7 @@ class SpeechGenerator(generator.Generator):
         ):
             return []
 
-        result = super()._generate_table_cell_column_header(
-            obj,
-            new_only=not self._get_is_nameless_toggle(obj),
-        )
+        result = super()._generate_table_cell_column_header(obj)
         if result:
             result.extend(self.voice(DEFAULT, obj=obj))
         return result
@@ -1871,7 +1868,7 @@ class SpeechGenerator(generator.Generator):
         ):
             return []
 
-        result = super()._generate_table_cell_row_header(obj, new_only=True)
+        result = super()._generate_table_cell_row_header(obj)
         if result:
             result.extend(self.voice(DEFAULT, obj=obj))
         return result
