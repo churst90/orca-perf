@@ -320,6 +320,32 @@ class SpeechServer(speechserver.SpeechServer):
         if self._client is not None:
             self._send_command(self._client.speak, ssml, **kwargs)
 
+    def _emit_speech_emitted(
+        self, text: str, acss: dict[str, Any] | None,
+    ) -> None:
+        """Hand text off to any speech_emitted subscribers.
+
+        Wrapped in a broad except so a misbehaving subscriber can
+        never interfere with the local speech that follows.
+        """
+
+        try:
+            from . import dbus_service  # pylint: disable=import-outside-toplevel
+            controller = dbus_service.get_remote_controller()
+            if controller is None:
+                return
+            language = ""
+            if acss:
+                family = acss.get(ACSS.FAMILY) or {}
+                if isinstance(family, dict):
+                    lang = family.get("lang", "") or ""
+                    dialect = family.get("dialect", "") or ""
+                    language = f"{lang}-{dialect}" if (lang and dialect) else lang
+            controller.emit_speech_emitted(text, "", language)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = f"SPEECH DISPATCHER: _emit_speech_emitted failed: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+
     def _say_all(
         self,
         iterator: Iterator[tuple[speechserver.SayAllContext, dict[str, Any]]],
@@ -400,6 +426,11 @@ class SpeechServer(speechserver.SpeechServer):
     def speak(self, text: str | None = None, acss: dict[str, Any] | None = None) -> None:
         if not text:
             return
+
+        # Fire speech_emitted to any subscribers (e.g. orca-remote
+        # mirroring outbound speech to a remote peer). Best-effort:
+        # never let subscriber failures interfere with local speech.
+        self._emit_speech_emitted(text, acss)
 
         if len(text) == 1:
             if (

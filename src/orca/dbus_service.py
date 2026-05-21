@@ -685,6 +685,62 @@ class OrcaRemoteController:
         self._modal_extension: object | None = None
         self._modal_suspended_commands: list = []
         self._modal_keys: set[tuple[str, int]] = set()
+        # speech_emitted subscribers. The speech path (currently
+        # speechdispatcherfactory.SpeechServer.speak) calls
+        # emit_speech_emitted() once per finalized utterance, which
+        # invokes every registered callback in turn. Used by
+        # extensions like orca-remote to mirror outbound speech to a
+        # remote peer without monkey-patching the speech server.
+        self._speech_emitted_subscribers: "list[Callable[[str, str, str], None]]" = []
+
+    def subscribe_speech_emitted(
+        self, callback: "Callable[[str, str, str], None]",
+    ) -> None:
+        """Subscribe to spoken-utterance events.
+
+        `callback(text, voice_type, language)` is invoked once per
+        finalized utterance. `text` is the post-pronunciation,
+        pre-synth string about to be spoken. `voice_type` is reserved
+        for future use (currently always ""). `language` is the BCP47
+        language tag derived from the ACSS family if available, else
+        "".
+
+        Callbacks run on whatever thread the speech path was called
+        from -- typically the GLib main thread. Subscribers should
+        not block; if they need to do IO, marshal off-thread first.
+        Exceptions raised by callbacks are logged and swallowed so
+        one bad subscriber cannot break speech for the whole session.
+        """
+
+        if callback not in self._speech_emitted_subscribers:
+            self._speech_emitted_subscribers.append(callback)
+
+    def unsubscribe_speech_emitted(
+        self, callback: "Callable[[str, str, str], None]",
+    ) -> None:
+        """Remove a previously-subscribed speech_emitted callback."""
+
+        if callback in self._speech_emitted_subscribers:
+            self._speech_emitted_subscribers.remove(callback)
+
+    def emit_speech_emitted(
+        self, text: str, voice_type: str = "", language: str = "",
+    ) -> None:
+        """Fire speech_emitted at every subscriber. Called by the speech path."""
+
+        if not self._speech_emitted_subscribers:
+            return
+        # Iterate over a snapshot in case a callback unsubscribes
+        # itself mid-iteration.
+        for callback in list(self._speech_emitted_subscribers):
+            try:
+                callback(text, voice_type, language)
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                msg = (
+                    f"REMOTE CONTROLLER: speech_emitted subscriber "
+                    f"{callback!r} raised: {error}"
+                )
+                debug.print_message(debug.LEVEL_WARNING, msg, True)
 
     def start(self) -> bool:
         """Starts the D-Bus service."""
