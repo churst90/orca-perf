@@ -692,6 +692,13 @@ class OrcaRemoteController:
         # extensions like orca-remote to mirror outbound speech to a
         # remote peer without monkey-patching the speech server.
         self._speech_emitted_subscribers: "list[Callable[[str, str, str], None]]" = []
+        # braille_emitted subscribers. The braille path (braille.py
+        # refresh / _paint_display) calls emit_braille_emitted() with
+        # the rendered braille string and the cursor cell index each
+        # time the display is refreshed. Used by orca-remote to mirror
+        # the slave's braille buffer to a remote master without
+        # monkey-patching braille.py.
+        self._braille_emitted_subscribers: "list[Callable[[str, int], None]]" = []
 
     def subscribe_speech_emitted(
         self, callback: "Callable[[str, str, str], None]",
@@ -738,6 +745,53 @@ class OrcaRemoteController:
             except Exception as error:  # pylint: disable=broad-exception-caught
                 msg = (
                     f"REMOTE CONTROLLER: speech_emitted subscriber "
+                    f"{callback!r} raised: {error}"
+                )
+                debug.print_message(debug.LEVEL_WARNING, msg, True)
+
+    def subscribe_braille_emitted(
+        self, callback: "Callable[[str, int], None]",
+    ) -> None:
+        """Subscribe to braille-display refresh events.
+
+        `callback(text, cursor_cell)` is invoked each time braille.py
+        refreshes the display. `text` is the rendered string that
+        would be sent to the local braille display (after region
+        composition, contraction, and any cursor markers). `cursor_cell`
+        is the 0-based cell index of the braille cursor within `text`,
+        or -1 if no cursor is shown.
+
+        Callbacks run on whatever thread the braille refresh was
+        called from (typically the GLib main thread). Subscribers
+        should not block; marshal off-thread for IO. Exceptions are
+        logged and swallowed so one bad subscriber can't break braille
+        for the whole session.
+        """
+
+        if callback not in self._braille_emitted_subscribers:
+            self._braille_emitted_subscribers.append(callback)
+
+    def unsubscribe_braille_emitted(
+        self, callback: "Callable[[str, int], None]",
+    ) -> None:
+        """Remove a previously-subscribed braille_emitted callback."""
+
+        if callback in self._braille_emitted_subscribers:
+            self._braille_emitted_subscribers.remove(callback)
+
+    def emit_braille_emitted(
+        self, text: str, cursor_cell: int = -1,
+    ) -> None:
+        """Fire braille_emitted at every subscriber. Called by braille.py."""
+
+        if not self._braille_emitted_subscribers:
+            return
+        for callback in list(self._braille_emitted_subscribers):
+            try:
+                callback(text, cursor_cell)
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                msg = (
+                    f"REMOTE CONTROLLER: braille_emitted subscriber "
                     f"{callback!r} raised: {error}"
                 )
                 debug.print_message(debug.LEVEL_WARNING, msg, True)

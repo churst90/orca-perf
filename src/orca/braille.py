@@ -2194,6 +2194,30 @@ def _paint_display(line_info: _LineInfo, start_position: int, end_position: int)
             sub_mask = None
         _STATE.monitor_callback(_STATE.cursor_cell, substring, sub_mask, _STATE.display_size[0])
 
+    # Fire braille_emitted to any registered extension subscribers
+    # with the final substring and cursor cell (0-based; -1 if no
+    # cursor). Unconditional on every paint so a host-mode user
+    # without a local BrlAPI display can still mirror their braille
+    # to a remote master. The emit is best-effort: dbus_service
+    # swallows exceptions raised by subscribers so a misbehaving
+    # extension can't break braille for the whole session.
+    try:
+        from . import dbus_service  # pylint: disable=import-outside-toplevel
+        controller = dbus_service.get_remote_controller()
+        # BrlTTY uses 1-based cursor_cell with 0 meaning "no cursor".
+        # The subscriber API normalizes to 0-based with -1 for none.
+        if _STATE.cursor_cell == 0:
+            emit_cursor = -1
+        else:
+            emit_cursor = _STATE.cursor_cell - 1
+        controller.emit_braille_emitted(substring, emit_cursor)
+    except Exception as error:  # pylint: disable=broad-except
+        debug.print_message(
+            debug.LEVEL_WARNING,
+            f"BRAILLE: emit_braille_emitted dispatch failed: {error}",
+            True,
+        )
+
     _STATE.beginning_is_showing = start_position == 0
     _STATE.end_is_showing = end_position >= len(line_info.string)
     return True
