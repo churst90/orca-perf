@@ -145,12 +145,6 @@ class AXObject:
 
     _LL_CACHE_MAX = 8000
 
-    # Long-lived name cache enabled. The held-key coalesce fix in
-    # structural_navigator (ccda9d591) was the actual cure for the
-    # wrong-window-title-on-Alt-Tab behavior, not this cache. Reclaims
-    # ~3 percentage points of steady-state hit rate (95% -> 98%).
-    _NAME_LL_CACHE_DISABLED = False
-
     _lock = threading.Lock()
 
     # Per-thread event-scoped caches. Populated by event_scope() so that
@@ -981,16 +975,13 @@ class AXObject:
             return cache[key]
 
         # Layer 2: long-lived name cache (invalidated on name-change events).
-        # Skipped when the diagnostic flag is set so we can isolate whether
-        # this layer is contributing to the wrong-window-title issue.
-        if not AXObject._NAME_LL_CACHE_DISABLED:
-            with AXObject._lock:
-                ll_name = AXObject.LONG_LIVED_NAMES.get(key)
-            if ll_name is not None:
-                if cache is not None:
-                    cache[key] = ll_name
-                AXObject._record_ll_hit()
-                return ll_name
+        with AXObject._lock:
+            ll_name = AXObject.LONG_LIVED_NAMES.get(key)
+        if ll_name is not None:
+            if cache is not None:
+                cache[key] = ll_name
+            AXObject._record_ll_hit()
+            return ll_name
 
         # Layer 3: AT-SPI call
         try:
@@ -1004,7 +995,7 @@ class AXObject:
 
         # Only cache non-empty names; empty string could mean "not yet set"
         # in some toolkit implementations and we don't want to lock that in.
-        if name and not AXObject._NAME_LL_CACHE_DISABLED:
+        if name:
             AXObject._ll_store(AXObject.LONG_LIVED_NAMES, key, name)
         if cache is not None:
             cache[key] = name
