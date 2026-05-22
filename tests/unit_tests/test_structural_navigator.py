@@ -1628,3 +1628,138 @@ class TestStructuralNavigator:
         manager_instance.emit_region_changed.assert_called()
         call_kwargs = manager_instance.emit_region_changed.call_args
         assert call_kwargs.kwargs.get("mode") == focus_manager.STRUCTURAL_NAVIGATOR
+
+
+@pytest.mark.unit
+class TestNavCacheRebuilder:
+    """Test the background-rebuild path against wraparound and eviction races."""
+
+    def _setup_dependencies(self, test_context):
+        """Set up dependencies for structural_navigator module testing."""
+
+        additional_modules = [
+            "orca.cmdnames",
+            "orca.command_manager",
+            "orca.dbus_service",
+            "orca.debug",
+            "orca.focus_manager",
+            "orca.guilabels",
+            "orca.input_event_manager",
+            "orca.keybindings",
+            "orca.messages",
+            "orca.object_properties",
+            "orca.orca_gui_navlist",
+            "orca.orca_i18n",
+            "orca.script_manager",
+            "orca.AXHypertext",
+            "orca.AXObject",
+            "orca.AXTable",
+            "orca.AXText",
+            "orca.AXUtilities",
+            "orca.input_event",
+            "orca.braille_presenter",
+            "orca.presentation_manager",
+        ]
+        essential_modules = test_context.setup_shared_dependencies(additional_modules)
+        essential_modules["orca.debug"].print_message = test_context.Mock()
+        essential_modules["orca.debug"].LEVEL_INFO = 800
+        controller_mock = test_context.Mock()
+        controller_mock.register_decorated_module.return_value = None
+        essential_modules["orca.dbus_service"].get_remote_controller.return_value = controller_mock
+        return essential_modules
+
+    def test_wraparound_clears_in_flight_set(self, test_context: OrcaTestContext) -> None:
+        """Cache wraparound must clear _nav_cache_rebuilding alongside the
+        cache and rebuilders. Otherwise an in-flight rebuild can write back
+        to the cleared cache leaving a zombie entry with no rebuilder."""
+
+        self._setup_dependencies(test_context)
+        from orca.structural_navigator import get_navigator
+
+        nav = get_navigator()
+        nav._nav_cache.clear()
+        nav._nav_cache_rebuilders.clear()
+        nav._nav_cache_rebuilding.clear()
+        nav._nav_cache_rebuilding.add((123, "annotations"))
+        # Force the wraparound branch by stuffing the cache past its cap.
+        max_size = nav._NAV_CACHE_MAX
+        for i in range(max_size):
+            nav._nav_cache[(i, "annotations")] = []
+
+        nav._cached_or_compute(test_context.Mock(), "annotations", lambda: [])
+
+        assert (123, "annotations") not in nav._nav_cache_rebuilding
+
+    def test_rebuild_discarded_when_entry_evicted(self, test_context: OrcaTestContext) -> None:
+        """_rebuild_cache_entry must not write back if the entry was evicted
+        from _nav_cache_rebuilders (defunct event, wraparound) while the
+        background rebuild was in flight."""
+
+        self._setup_dependencies(test_context)
+        from orca.structural_navigator import get_navigator
+
+        nav = get_navigator()
+        nav._nav_cache.clear()
+        nav._nav_cache_rebuilders.clear()
+        nav._nav_cache_rebuilding.clear()
+        full_key = (456, "buttons")
+        nav._nav_cache_rebuilding.add(full_key)
+        # Caller invariant: rebuilder is NOT in _nav_cache_rebuilders, so
+        # the entry is considered evicted.
+
+        nav._rebuild_cache_entry(full_key, lambda: ["fresh"])
+
+        assert full_key not in nav._nav_cache
+        assert full_key not in nav._nav_cache_rebuilding
+
+    def test_rebuild_writes_back_when_entry_still_tracked(
+        self, test_context: OrcaTestContext,
+    ) -> None:
+        """When _nav_cache_rebuilders still has the key, the fresh result
+        must be swapped in and the in-flight flag cleared."""
+
+        self._setup_dependencies(test_context)
+        from orca.structural_navigator import get_navigator
+
+        nav = get_navigator()
+        nav._nav_cache.clear()
+        nav._nav_cache_rebuilders.clear()
+        nav._nav_cache_rebuilding.clear()
+        full_key = (789, "headings")
+        compute_fn = lambda: ["fresh"]  # noqa: E731
+        nav._nav_cache_rebuilders[full_key] = compute_fn
+        nav._nav_cache_rebuilding.add(full_key)
+
+        nav._rebuild_cache_entry(full_key, compute_fn)
+
+        assert nav._nav_cache[full_key] == ["fresh"]
+        assert full_key not in nav._nav_cache_rebuilding
+
+    def test_rebuild_drops_entry_on_compute_exception(
+        self, test_context: OrcaTestContext,
+    ) -> None:
+        """If the closure raises (root went defunct, toolkit threw), the
+        cache entry and rebuilder must both be dropped so the next read
+        does the work on the foreground path with proper error handling."""
+
+        self._setup_dependencies(test_context)
+        from orca.structural_navigator import get_navigator
+
+        nav = get_navigator()
+        nav._nav_cache.clear()
+        nav._nav_cache_rebuilders.clear()
+        nav._nav_cache_rebuilding.clear()
+        full_key = (321, "lists")
+
+        def broken():
+            raise RuntimeError("root defunct")
+
+        nav._nav_cache[full_key] = ["stale"]
+        nav._nav_cache_rebuilders[full_key] = broken
+        nav._nav_cache_rebuilding.add(full_key)
+
+        nav._rebuild_cache_entry(full_key, broken)
+
+        assert full_key not in nav._nav_cache
+        assert full_key not in nav._nav_cache_rebuilders
+        assert full_key not in nav._nav_cache_rebuilding

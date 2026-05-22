@@ -3283,3 +3283,153 @@ class TestAXObject:
         assert hash(obj_a) not in AXObject.LONG_LIVED_STATES
         assert AXObject.LONG_LIVED_STATES[hash(obj_b)] == frozenset({2})
         AXObject.LONG_LIVED_STATES.clear()
+
+
+@pytest.mark.unit
+class TestLongLivedCacheExclusions:
+    """Pin the _LL_CACHE_EXCLUDED_STATES set so a refactor cannot
+    silently re-cache a transient bit. Same race class as the prefs-
+    sidebar 'not selected, <row>' incident fixed in 9ae4ba00f."""
+
+    def _setup(self, test_context):
+        core_modules = [
+            "orca.debug",
+            "orca.messages",
+            "orca.input_event",
+            "orca.keybindings",
+            "orca.cmdnames",
+            "orca.dbus_service",
+            "orca.script_manager",
+            "orca.orca_i18n",
+            "orca.guilabels",
+            "orca.text_attribute_names",
+            "orca.focus_manager",
+            "orca.braille",
+            "orca.keynames",
+        ]
+        essential_modules = {}
+        for module_name in core_modules:
+            mock_module = test_context.Mock()
+            test_context.patch_module(module_name, mock_module)
+            essential_modules[module_name] = mock_module
+        test_context.configure_shared_module_behaviors(essential_modules)
+        return essential_modules
+
+    def test_excluded_states_canonical_list(self, test_context: OrcaTestContext) -> None:
+        """The excluded set is the canonical list of transient bits.
+
+        Adding a bit needs a documented reason in the dict comment.
+        Removing one requires confirming the bit is genuinely stable
+        AND that no event delivery race can flip it between the
+        populating get_state_set call and a subsequent has_state read.
+        """
+
+        self._setup(test_context)
+        from orca.ax_object import AXObject
+
+        assert AXObject._LL_CACHE_EXCLUDED_STATES == frozenset({
+            1,   # ACTIVE
+            2,   # ARMED
+            3,   # BUSY
+            4,   # CHECKED
+            5,   # COLLAPSED
+            10,  # EXPANDED
+            12,  # FOCUSED
+            15,  # ICONIFIED
+            20,  # PRESSED
+            23,  # SELECTED
+            25,  # SHOWING
+            30,  # VISIBLE
+            32,  # INDETERMINATE
+            36,  # INVALID_ENTRY
+        })
+
+    def test_showing_bypasses_long_lived_cache(self, test_context: OrcaTestContext) -> None:
+        """has_state(obj, SHOWING) must query AT-SPI, not the cache.
+
+        SHOWING flips with scrolling and panel toggles; the state-changed
+        event for it can race the populating get_state_set call. The
+        prefs-sidebar race fixed in 9ae4ba00f is the canonical example
+        for SELECTED; SHOWING and VISIBLE land in the same bucket.
+        """
+
+        self._setup(test_context)
+        from orca.ax_object import AXObject
+
+        AXObject.LONG_LIVED_STATES.clear()
+        obj = test_context.Mock(spec=Atspi.Accessible)
+        test_context.patch_object(AXObject, "is_valid", side_effect=lambda o: True)
+        AXObject.LONG_LIVED_STATES[hash(obj)] = frozenset({int(Atspi.StateType.EDITABLE)})
+
+        state_set_mock = test_context.Mock()
+        state_set_mock.contains = test_context.Mock(return_value=True)
+        get_state_set_mock = test_context.Mock(return_value=state_set_mock)
+        test_context.patch_object(AXObject, "get_state_set", new=get_state_set_mock)
+
+        assert AXObject.has_state(obj, Atspi.StateType.SHOWING) is True
+        assert AXObject.has_state(obj, Atspi.StateType.VISIBLE) is True
+        assert get_state_set_mock.call_count == 2
+        AXObject.LONG_LIVED_STATES.clear()
+
+
+@pytest.mark.unit
+class TestLLStoreEviction:
+    """Pin the FIFO-evict-25% behavior on long-lived cache overflow."""
+
+    def _setup(self, test_context):
+        core_modules = [
+            "orca.debug",
+            "orca.messages",
+            "orca.input_event",
+            "orca.keybindings",
+            "orca.cmdnames",
+            "orca.dbus_service",
+            "orca.script_manager",
+            "orca.orca_i18n",
+            "orca.guilabels",
+            "orca.text_attribute_names",
+            "orca.focus_manager",
+            "orca.braille",
+            "orca.keynames",
+        ]
+        essential_modules = {}
+        for module_name in core_modules:
+            mock_module = test_context.Mock()
+            test_context.patch_module(module_name, mock_module)
+            essential_modules[module_name] = mock_module
+        test_context.configure_shared_module_behaviors(essential_modules)
+        return essential_modules
+
+    def test_evicts_oldest_quarter_on_overflow(self, test_context: OrcaTestContext) -> None:
+        """At _LL_CACHE_MAX, FIFO-evict 25% so the cache doesn't cliff to empty."""
+
+        self._setup(test_context)
+        from orca.ax_object import AXObject
+
+        cache: dict[int, str] = {}
+        cap = AXObject._LL_CACHE_MAX
+        # Fill exactly to the cap; next insert should trigger eviction.
+        for i in range(cap):
+            cache[i] = f"v{i}"
+        AXObject._ll_store(cache, cap, f"v{cap}")
+
+        evict_count = cap // 4
+        # Oldest evict_count keys gone; remaining are cap-evict_count old
+        # entries plus the just-inserted one.
+        assert len(cache) == cap - evict_count + 1
+        # Insertion-order: keys 0..evict_count-1 evicted, evict_count..cap kept.
+        for i in range(evict_count):
+            assert i not in cache
+        assert evict_count in cache
+        assert cap in cache
+
+    def test_under_cap_is_plain_insert(self, test_context: OrcaTestContext) -> None:
+        """Below the cap, _ll_store is a plain dict insert with no eviction."""
+
+        self._setup(test_context)
+        from orca.ax_object import AXObject
+
+        cache: dict[int, str] = {1: "a", 2: "b"}
+        AXObject._ll_store(cache, 3, "c")
+
+        assert cache == {1: "a", 2: "b", 3: "c"}
