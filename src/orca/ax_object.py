@@ -272,11 +272,21 @@ class AXObject:
 
     @staticmethod
     def _ll_store(d: dict, key: int, value) -> None:
-        """Stores a value in a long-lived cache dict, enforcing the size cap."""
+        """Stores a value in a long-lived cache dict, enforcing the size cap.
+
+        Drops the oldest 25% of entries on overflow rather than clearing
+        the whole dict. The earlier clear-all behavior caused cache
+        cliffs in sessions that walk >8000 unique accessibles (large
+        web apps): every 8001th unique object forced a full reload of
+        the cache from scratch. Python dicts preserve insertion order,
+        so we can evict FIFO with no extra bookkeeping.
+        """
 
         with AXObject._lock:
             if len(d) >= AXObject._LL_CACHE_MAX:
-                d.clear()
+                evict_count = AXObject._LL_CACHE_MAX // 4
+                for old_key in list(d.keys())[:evict_count]:
+                    del d[old_key]
             d[key] = value
 
     @staticmethod
