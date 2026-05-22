@@ -76,6 +76,167 @@ self.controller.set_value_internal("SpeechManager", "Pitch", 5.0)
 self.controller.set_value_internal("SpeechManager", "Volume", 8.0)
 ```
 
+## Event Subscription API (perf-branch addition)
+
+Extensions can subscribe to Orca's internal events to react when speech,
+braille, or keyboard input flows through the screen reader. Callbacks run on
+Orca's main thread; subscribers should return promptly and dispatch heavier
+work elsewhere.
+
+### `subscribe_speech_emitted(callback)` / `unsubscribe_speech_emitted(callback)`
+
+Fires whenever `SpeechManager.speak()` is called. The callback receives the
+text Orca was about to send to the speech server.
+
+```python
+def on_speech(text, voice_name, rate, pitch, volume):
+    # Mirror outbound speech to a remote master, a log, a transcript window...
+    pass
+
+self.controller.subscribe_speech_emitted(on_speech)
+```
+
+### `subscribe_braille_emitted(callback)` / `unsubscribe_braille_emitted(callback)`
+
+Fires from `braille._paint_display` with the rendered braille string and
+cursor cell position.
+
+```python
+def on_braille(text, cursor_cell):
+    pass
+
+self.controller.subscribe_braille_emitted(on_braille)
+```
+
+### `subscribe_keyboard_event(callback)` / `unsubscribe_keyboard_event(callback)`
+
+Fires before `event.process()` in the input event dispatcher. The callback
+receives `(pressed, keycode, keysym, modifiers, text)`. Return `True` from
+the callback to consume the event from *Orca's* dispatch (the focused
+application may still receive it; for system-level grabs use
+`orca_ext_utils.keyboard_grab.KeysetGrab`).
+
+```python
+def on_key(pressed, keycode, keysym, modifiers, text):
+    if pressed and keysym == 0xff1b:  # XK_Escape
+        return True  # Orca won't process this Escape press
+    return False
+
+self.controller.subscribe_keyboard_event(on_key)
+```
+
+## Output API (perf-branch addition)
+
+### `display_braille_text(text, cursor_cell=-1, duration_ms=None)`
+
+Pushes arbitrary text directly to the local BrlAPI display, bypassing the
+region-stack composition path. Useful for notifications, calculator/status
+widgets, and test harnesses that need to assert on display state.
+
+```python
+self.controller.display_braille_text("Connected", cursor_cell=0)
+```
+
+### `synthesize_key_event(keysym, pressed)`
+
+Generates a key press or release at the AT-SPI input layer. The keysym is
+an X11 keysym (use `orca_ext_utils.key_combo_helpers.name_to_keysym` to
+look one up from a name).
+
+### `synthesize_mouse_event(x, y, button="left")`
+
+Synthesizes a mouse click at screen coords. Coords are interpreted relative
+to the active window. Currently uses `Atspi.generate_mouse_event`; a
+planned split will narrow this to the AT-SPI path only, with X11 XTest /
+Wayland libei fallbacks living in `orca_ext_utils.mouse_input`.
+
+## Clipboard API (perf-branch addition)
+
+### `get_clipboard_text()` / `set_clipboard_text(text)`
+
+Reads / writes the system clipboard as text. The implementation will land
+upstream using a gpaste / klipper / GtkClipboard chain; perf-branch ships
+a working interim implementation.
+
+```python
+text = self.controller.get_clipboard_text()
+self.controller.set_clipboard_text("new content")
+```
+
+## Window API (perf-branch addition)
+
+### `get_active_window()`
+
+Returns the currently focused toplevel as an `Atspi.Accessible`, or
+`None`. Same object the focus manager tracks.
+
+### `get_active_window_screen_rect()` (transitional)
+
+Returns `(x, y, width, height)` of the active toplevel in screen coords,
+or `None` when AT-SPI / GTK4 / Wayland can't produce a real value.
+
+**This surface is transitional.** Per upstream review the screen-rect
+calculation will move to `orca_ext_utils.screen_rect` because it's only
+reliable on X11 and the upstream maintainer does not want a "sometimes
+works" API in core. Extensions should call
+`orca_ext_utils.screen_rect.for_accessible(controller.get_active_window())`
+or `screen_rect.for_active_window()` for new code.
+
+## Modal Mode API (perf-branch addition)
+
+Modal mode is a *surgical* key-grab mechanism: an extension can take over
+a specific set of (keysym, modifier) pairs for the duration of a mode,
+without affecting any other Orca chord. Motivating use case:
+orca-remote's master-mode key forwarding, where a remote NVDA master
+sends Orca+Ctrl+R via XTest and the local slave's own binding for that
+chord must be suspended to prevent two voices saying "Recognizing..." in
+unison.
+
+### `enter_modal_mode(extension, keys)`
+
+Take ownership of the given keys. `keys` is a `list[tuple[str, int]]`
+of (keysym_name, modifier_mask) pairs. Returns `True` on success, `False`
+if another extension is already modal.
+
+```python
+keys = [("r", 0x05)]  # Ctrl+Shift+r
+ok = self.controller.enter_modal_mode(self, keys)
+```
+
+### `exit_modal_mode(extension)`
+
+Release the modal grab. Must be called by the same extension instance
+that entered it. The base `Extension.disable()` automatically exits any
+modal mode the extension owns.
+
+### `is_in_modal_mode()` / `get_modal_owner()`
+
+Diagnostics. `get_modal_owner()` returns the `Extension` instance that
+currently holds modal mode, or `None`.
+
+## Companion Library: `orca-ext-utils`
+
+Some capabilities that extensions need are *deliberately* not in the
+controller, on the principle that Orca shouldn't carry utilities it
+doesn't need itself. The companion library
+[`orca-ext-utils`](https://github.com/churst90/orca-ext-utils) covers
+those gaps. It is plain Python; extensions can either depend on it or
+vendor the relevant modules into their `.orca-ext` archive.
+
+| Module | What it does | Why not in controller |
+|---|---|---|
+| `screen_rect` | Screen-coord rect for an AT-SPI accessible | X11-only path; AT-SPI doesn't reliably support it on Wayland |
+| `screen_capture` | Region capture (Gdk / ImageMagick / xdg-desktop-portal) | Three-backend chain; portal path requires per-session token management |
+| `mouse_input` | Click / press / move synthesis at coords | XTest path is X11-only; libei / portal path is the Wayland fallback |
+| `keyboard_grab` | `Atspi.Device.add_key_grab` batch wrapper | System-level (not Orca-dispatch) consume; only some extensions need it |
+| `window_info` | Active toplevel rect + X11 window ID | XID is X11-only; Wayland would need portal session |
+| `compositor_query` | Multi-monitor geometry, DPI scaling, refresh rate | Gdk-direct; extension-specific need (overlay positioning) |
+| `text_to_braille` | Text -> cell bytes (liblouis optional) | liblouis is a heavy optional C dep |
+| `notification` | libnotify desktop-notification facade | Orca doesn't use desktop notifications itself |
+| `process_supervisor` | Sync + GLib-async subprocess with timeout | Extension-specific; Orca doesn't spawn helper processes |
+| `key_combo_helpers` | keysym / modifier parsing and formatting | Pure-Python convenience; no Orca-side need |
+| `extension_settings` | Per-extension key/value store (GSettings or JSON) | Bridges the gap until upstream extension-settings UI lands |
+
 ## Example
 
 ```python
