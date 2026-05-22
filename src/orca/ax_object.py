@@ -139,8 +139,8 @@ class AXObject:
         15,  # ICONIFIED    -- window minimized
         20,  # PRESSED      -- button pressed
         23,  # SELECTED     -- selection, races with selection-changed
-        24,  # SHOWING      -- flips with scrolling / panel toggles
-        28,  # VISIBLE      -- same as SHOWING; common in ax_utilities
+        25,  # SHOWING      -- flips with scrolling / panel toggles
+        30,  # VISIBLE      -- same as SHOWING; common in ax_utilities
         32,  # INDETERMINATE -- tristate
         36,  # INVALID_ENTRY -- form validation
     })
