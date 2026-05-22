@@ -228,8 +228,13 @@ class StructuralNavigator(Extension):
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         with self._nav_cache_lock:
             if len(self._nav_cache) >= self._NAV_CACHE_MAX:
+                # Wraparound. Also clear the in-flight set so a rebuild
+                # that completes after this point doesn't write back to
+                # the cleared cache (would leave a zombie entry with no
+                # rebuilder registered, refreshable only via stale event).
                 self._nav_cache.clear()
                 self._nav_cache_rebuilders.clear()
+                self._nav_cache_rebuilding.clear()
             self._nav_cache[full_key] = result
             self._nav_cache_rebuilders[full_key] = compute_fn
         self._nav_cache_misses += 1
@@ -355,12 +360,15 @@ class StructuralNavigator(Extension):
             return False
 
         with self._nav_cache_lock:
-            # If the entry was evicted while we were rebuilding (defunct
-            # event hit it, cache wraparound), discard the result rather
-            # than re-inserting -- another reader has moved on.
-            if full_key in self._nav_cache_rebuilding:
+            # Discard the rebuild result if the entry was evicted while
+            # we were rebuilding. Check _nav_cache_rebuilders rather than
+            # _nav_cache_rebuilding -- the latter only signals "I am
+            # in-flight," while the former is the source of truth for
+            # "this entry is still tracked." Cache wraparound and
+            # defunct-event pops both go through _nav_cache_rebuilders.
+            self._nav_cache_rebuilding.discard(full_key)
+            if full_key in self._nav_cache_rebuilders:
                 self._nav_cache[full_key] = fresh
-                self._nav_cache_rebuilding.discard(full_key)
         self._log_nav_cache(full_key[1], hit=False, n=len(fresh), elapsed_ms=elapsed_ms)
         return False  # one-shot
 
