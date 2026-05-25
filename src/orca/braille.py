@@ -83,6 +83,9 @@ else:
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
 
+    # Args: cursor_cell, visible window, visible mask, display size, full line, full mask.
+    MonitorCallback = Callable[[int, str, str | None, int, str, str | None], None]
+
     from .input_event import BrailleEvent, InputEvent
 
 
@@ -308,7 +311,7 @@ class _BrailleState:
     brlapi_current_priority: int = BRLAPI_PRIORITY_DEFAULT
     default_contraction_table: str | None = None
     pending_key_ranges: list[int] = field(default_factory=list)
-    monitor_callback: Callable[[int, str, str | None, int], None] | None = None
+    monitor_callback: MonitorCallback | None = None
     enable_braille: bool = True
     enable_contracted_braille: bool = False
     contraction_table: str = ""
@@ -323,7 +326,7 @@ class _BrailleState:
 _STATE = _BrailleState(brlapi_available=_BRLAPI_AVAILABLE)
 
 
-def set_monitor_callback(callback: Callable[[int, str, str | None, int], None] | None) -> None:
+def set_monitor_callback(callback: MonitorCallback | None) -> None:
     """Sets the callback for updating the braille monitor display."""
 
     _STATE.monitor_callback = callback
@@ -2188,11 +2191,19 @@ def _paint_display(line_info: _LineInfo, start_position: int, end_position: int)
             return False
 
     if _STATE.monitor_callback is not None:
+        visible = line_info.string[start_position:end_position]
         if line_info.attribute_mask:
-            sub_mask = line_info.attribute_mask[start_position:end_position]
+            visible_mask = line_info.attribute_mask[start_position:end_position]
         else:
-            sub_mask = None
-        _STATE.monitor_callback(_STATE.cursor_cell, substring, sub_mask, _STATE.display_size[0])
+            visible_mask = None
+        _STATE.monitor_callback(
+            _STATE.cursor_cell,
+            visible,
+            visible_mask,
+            _STATE.display_size[0],
+            line_info.string,
+            line_info.attribute_mask or None,
+        )
 
     # Fire braille_emitted to any registered extension subscribers
     # with the final substring and cursor cell (0-based; -1 if no
