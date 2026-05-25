@@ -249,9 +249,7 @@ def register_builtins(navigator: StructuralNavigator) -> None:
         name="landmark",
         mode_support=doc_only,
         matcher=lambda s, _n=navigator: _n._get_all_landmarks(s),
-        # Landmarks use the special _present_landmark presenter, which
-        # passes NO_LANDMARK_FOUND rather than a NO_MORE_LANDMARKS string.
-        no_more_message=messages.NO_LANDMARK_FOUND,
+        no_more_message=messages.NO_MORE_LANDMARKS,
         list_dialog_title=guilabels.SN_TITLE_LANDMARK,
         list_dialog_headers=(guilabels.SN_HEADER_LANDMARK, guilabels.SN_HEADER_ROLE),
         list_row_builder=lambda s, o, _n=navigator: [
