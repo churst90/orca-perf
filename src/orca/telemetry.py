@@ -138,6 +138,17 @@ class Telemetry(Extension):
         return dbus_service.UInt32(len(AXObject.KNOWN_DEAD))
 
     @dbus_service.getter
+    def get_cache_divergence_count(self) -> UInt32:
+        """Returns the number of cache-vs-live divergences observed.
+
+        Only non-zero when ORCA_CACHE_DIVERGENCE_CHECK=1 is set at startup;
+        zero otherwise. Use the orca-cache-divergence.log for per-event detail.
+        """
+
+        from .ax_object import AXObject  # pylint: disable=import-outside-toplevel
+        return dbus_service.UInt32(AXObject.CACHE_DIVERGENCE_COUNT)
+
+    @dbus_service.getter
     def get_long_lived_cache_size(self) -> UInt32:
         """Returns total entries across LONG_LIVED_ROLES/PARENTS/STATES."""
 

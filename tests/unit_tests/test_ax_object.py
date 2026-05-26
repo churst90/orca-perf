@@ -3253,15 +3253,17 @@ class TestAXObject:
         from orca.ax_object import AXObject
 
         AXObject.LONG_LIVED_STATES.clear()
+        AXObject.LONG_LIVED_ROLES.clear()
         obj = test_context.Mock(spec=Atspi.Accessible)
         AXObject.LONG_LIVED_STATES[hash(obj)] = frozenset({1, 2})
-        AXObject.LONG_LIVED_NAMES[hash(obj)] = "before defunct"
+        AXObject.LONG_LIVED_ROLES[hash(obj)] = Atspi.Role.PUSH_BUTTON
 
         AXObject.invalidate_for_event("object:defunct", obj)
 
         assert hash(obj) not in AXObject.LONG_LIVED_STATES
-        assert hash(obj) not in AXObject.LONG_LIVED_NAMES
+        assert hash(obj) not in AXObject.LONG_LIVED_ROLES
         AXObject.LONG_LIVED_STATES.clear()
+        AXObject.LONG_LIVED_ROLES.clear()
 
     def test_invalidate_for_event_state_change_leaves_other_entries(
         self,

@@ -78,6 +78,48 @@ def _perf_log_write(msg: str) -> None:
             pass
 
 
+# When set (env var ORCA_CACHE_DIVERGENCE_CHECK=1), every long-lived cache
+# hit on get_role/get_parent/has_state ALSO performs a live AT-SPI read and
+# logs any mismatch. Off by default -- the live read doubles D-Bus traffic
+# for cached paths, so it's strictly a diagnostic for testers capturing
+# evidence of staleness. Output goes to ~/orca-cache-divergence.log (or
+# $ORCA_CACHE_DIVERGENCE_LOG_FILE), separate from Orca's debug log so it
+# survives a crash and is grep-friendly.
+_DIVERGENCE_CHECK_ENABLED = os.environ.get(
+    "ORCA_CACHE_DIVERGENCE_CHECK", "",
+).lower() in ("1", "true", "yes")
+_DIVERGENCE_LOG_PATH = os.environ.get(
+    "ORCA_CACHE_DIVERGENCE_LOG_FILE",
+    os.path.expanduser("~/orca-cache-divergence.log"),
+)
+_DIVERGENCE_LOG_FILE = None
+_DIVERGENCE_LOG_LOCK = threading.Lock()
+
+
+def _divergence_log_write(msg: str) -> None:
+    """Append a line to the divergence log file. Opens lazily, line-buffered."""
+
+    global _DIVERGENCE_LOG_FILE
+    if not _DIVERGENCE_CHECK_ENABLED:
+        return
+    with _DIVERGENCE_LOG_LOCK:
+        if _DIVERGENCE_LOG_FILE is None:
+            try:
+                _DIVERGENCE_LOG_FILE = open(  # noqa: SIM115
+                    _DIVERGENCE_LOG_PATH, "a", buffering=1, encoding="utf-8",
+                )
+                _DIVERGENCE_LOG_FILE.write(
+                    f"# orca-cache-divergence log opened "
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n",
+                )
+            except OSError:
+                return
+        try:
+            _DIVERGENCE_LOG_FILE.write(f"{time.monotonic():.3f} {msg}\n")
+        except OSError:
+            pass
+
+
 class AXObject:
     """Wrapper for the Atspi.Accessible interface."""
 
@@ -86,6 +128,12 @@ class AXObject:
     SUPPORTED_INTERFACES: ClassVar[dict[int, dict[str, bool]]] = {}
     HUNG_OBJECTS: ClassVar[dict[int, float]] = {}
     HUNG_TIMEOUT = 1.0
+
+    # Diagnostic counter incremented every time _check_divergence finds a
+    # cached value that does not match a fresh AT-SPI read. Read via the
+    # telemetry D-Bus service; always-on (no perf cost when the divergence
+    # check itself is off, since the check returns immediately).
+    CACHE_DIVERGENCE_COUNT: ClassVar[int] = 0
 
     # Long-lived caches that survive across events. AT-SPI roles essentially
     # never change during an object's lifetime; parents rarely do; names
@@ -237,6 +285,42 @@ class AXObject:
             stats = getattr(AXObject._perf_stats_tls, "stats", None)
             if stats is not None:
                 stats["misses"] += 1
+
+    @staticmethod
+    def _check_divergence(
+        getter_name: str,
+        obj: Atspi.Accessible,
+        cached_value,
+        live_fetcher,
+    ) -> None:
+        """Logs a mismatch if the cached value differs from a fresh AT-SPI read.
+
+        Diagnostic-only path. Active when ORCA_CACHE_DIVERGENCE_CHECK=1 is set
+        in the environment. Off by default; the fast-return makes the check
+        free for normal runs. When on, doubles D-Bus traffic on every LL cache
+        hit so it should only be enabled while reproducing a suspected
+        staleness bug.
+        """
+
+        if not _DIVERGENCE_CHECK_ENABLED:
+            return
+        try:
+            live_value = live_fetcher(obj)
+        except GLib.GError:
+            return
+        if cached_value == live_value:
+            return
+        AXObject.CACHE_DIVERGENCE_COUNT += 1
+        try:
+            obj_repr = (
+                f"role={Atspi.Accessible.get_role_name(obj)} "
+                f"name={Atspi.Accessible.get_name(obj)!r}"
+            )
+        except GLib.GError:
+            obj_repr = "<obj details unavailable>"
+        _divergence_log_write(
+            f"{getter_name}: cached={cached_value!r} live={live_value!r} {obj_repr}",
+        )
 
     @staticmethod
     def invalidate_for_event(event_type: str, source: Atspi.Accessible) -> None:
@@ -722,6 +806,9 @@ class AXObject:
                 ll_parent = AXObject.LONG_LIVED_PARENTS[key]
                 ll_lookup_done = True
         if ll_lookup_done:
+            AXObject._check_divergence(
+                "get_parent", obj, ll_parent, Atspi.Accessible.get_parent,
+            )
             if cache is not None:
                 cache[key] = ll_parent
             AXObject._record_ll_hit()
@@ -897,6 +984,9 @@ class AXObject:
         with AXObject._lock:
             ll_role = AXObject.LONG_LIVED_ROLES.get(key)
         if ll_role is not None:
+            AXObject._check_divergence(
+                "get_role", obj, ll_role, Atspi.Accessible.get_role,
+            )
             if cache is not None:
                 cache[key] = ll_role
             AXObject._record_ll_hit()
@@ -1243,8 +1333,14 @@ class AXObject:
         with AXObject._lock:
             cached_states = AXObject.LONG_LIVED_STATES.get(key)
         if cached_states is not None:
+            cached_has = state_int in cached_states
+            if _DIVERGENCE_CHECK_ENABLED:
+                AXObject._check_divergence(
+                    f"has_state[{state_int}]", obj, cached_has,
+                    lambda o: Atspi.Accessible.get_state_set(o).contains(state),
+                )
             AXObject._record_ll_hit()
-            return state_int in cached_states
+            return cached_has
 
         return AXObject.get_state_set(obj).contains(state)
 
