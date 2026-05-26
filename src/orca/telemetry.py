@@ -150,12 +150,11 @@ class Telemetry(Extension):
 
     @dbus_service.getter
     def get_long_lived_cache_size(self) -> UInt32:
-        """Returns total entries across LONG_LIVED_ROLES/PARENTS/STATES."""
+        """Returns total entries across LONG_LIVED_ROLES and LONG_LIVED_STATES."""
 
         from .ax_object import AXObject  # pylint: disable=import-outside-toplevel
         size = (
             len(AXObject.LONG_LIVED_ROLES)
-            + len(AXObject.LONG_LIVED_PARENTS)
             + len(AXObject.LONG_LIVED_STATES)
         )
         return dbus_service.UInt32(size)

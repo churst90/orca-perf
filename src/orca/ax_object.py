@@ -148,7 +148,6 @@ class AXObject:
     # .contains() on a stale StateSet segfaults inside libatspi. States
     # are still memoized within a single event via the event_scope cache.
     LONG_LIVED_ROLES: ClassVar[dict[int, Atspi.Role]] = {}
-    LONG_LIVED_PARENTS: ClassVar[dict[int, Atspi.Accessible | None]] = {}
     # Primitive-bits state cache. The earlier StateSet-object cache
     # (commits 7dd0f3905 / 6445b86e4) segfaulted because
     # Atspi.StateSet.contains() dereferences an internal pointer to the
@@ -216,17 +215,18 @@ class AXObject:
     def event_scope(label: str = "") -> Generator[None, None, None]:
         """Memoizes AT-SPI property reads within a single event handler.
 
-        Within the scope, get_role(), get_parent(), and get_state_set()
-        return cached values keyed by hash(obj). get_name() is intentionally
-        uncached -- AT-SPI's own cache covers it and avoiding an Orca-side
-        layer eliminates stale-title bugs when toolkits silently rename
-        windows without firing accessible-name property-change events.
+        Within the scope, get_role() and get_state_set() return cached values
+        keyed by hash(obj). get_name() and get_parent() are intentionally
+        uncached -- AT-SPI's own cache covers them, and avoiding an Orca-side
+        layer eliminates the staleness class of bugs that comes from betting
+        on accessible-name / accessible-parent property-change events that
+        toolkits do not reliably emit (window-title renames, DOM reparenting
+        through children-changed-only flows).
         The scope cache is discarded on scope exit so values cannot go
         stale across events.
         """
 
         AXObject._event_cache_tls.roles = {}
-        AXObject._event_cache_tls.parents = {}
         AXObject._event_cache_tls.state_sets = {}
         AXObject._event_cache_tls.cleared = set()
 
@@ -258,7 +258,6 @@ class AXObject:
                     )
                 AXObject._perf_stats_tls.stats = None
             AXObject._event_cache_tls.roles = None
-            AXObject._event_cache_tls.parents = None
             AXObject._event_cache_tls.state_sets = None
             AXObject._event_cache_tls.cleared = None
 
@@ -338,15 +337,11 @@ class AXObject:
         if event_type == "object:defunct":
             with AXObject._lock:
                 AXObject.LONG_LIVED_ROLES.pop(key, None)
-                AXObject.LONG_LIVED_PARENTS.pop(key, None)
                 AXObject.LONG_LIVED_STATES.pop(key, None)
                 AXObject.KNOWN_DEAD[key] = True
         elif event_type == "object:property-change:accessible-role":
             with AXObject._lock:
                 AXObject.LONG_LIVED_ROLES.pop(key, None)
-        elif event_type == "object:property-change:accessible-parent":
-            with AXObject._lock:
-                AXObject.LONG_LIVED_PARENTS.pop(key, None)
         elif event_type.startswith("object:state-changed:"):
             with AXObject._lock:
                 AXObject.LONG_LIVED_STATES.pop(key, None)
@@ -789,32 +784,6 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return None
 
-        key = hash(obj)
-        cache = getattr(AXObject._event_cache_tls, "parents", None)
-
-        # Layer 1: event-scope cache (within-event redundancy)
-        if cache is not None and key in cache:
-            AXObject._record_cache_hit()
-            return cache[key]
-
-        # Layer 2: long-lived parent cache (cross-event; tree mutations are
-        # signalled by children-changed events but we only invalidate on
-        # defunct here, accepting brief staleness for reparenting cases)
-        ll_lookup_done = False
-        with AXObject._lock:
-            if key in AXObject.LONG_LIVED_PARENTS:
-                ll_parent = AXObject.LONG_LIVED_PARENTS[key]
-                ll_lookup_done = True
-        if ll_lookup_done:
-            AXObject._check_divergence(
-                "get_parent", obj, ll_parent, Atspi.Accessible.get_parent,
-            )
-            if cache is not None:
-                cache[key] = ll_parent
-            AXObject._record_ll_hit()
-            return ll_parent
-
-        # Layer 3: AT-SPI call (D-Bus round-trip)
         try:
             parent = Atspi.Accessible.get_parent(obj)
         except GLib.GError as error:
@@ -825,9 +794,6 @@ class AXObject:
         if parent == obj:
             tokens = ["AXObject:", obj, "claims to be its own parent"]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            if cache is not None:
-                cache[key] = None
-                AXObject._record_cache_miss()
             return None
 
         if parent is None and AXObject.get_role(obj) not in [
@@ -836,11 +802,6 @@ class AXObject:
         ]:
             tokens = ["AXObject:", obj, "claims to have no parent"]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-
-        AXObject._ll_store(AXObject.LONG_LIVED_PARENTS, key, parent)
-        if cache is not None:
-            cache[key] = parent
-            AXObject._record_cache_miss()
 
         return parent
 
