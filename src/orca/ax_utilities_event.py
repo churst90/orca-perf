@@ -147,12 +147,13 @@ class AXUtilitiesEvent:
         debug.print_message(debug.LEVEL_INFO, msg, True)
         return similarity >= threshold
 
-    # Memory-pressure safety net interval. Event-driven invalidation in
-    # evict_object() handles the common cases (window:destroy,
-    # children-changed:remove). This periodic wipe is the long-tail backstop
-    # for objects that never trigger a destroy event we hook -- raised from
-    # 60s to 600s so hot baselines survive across reasonable idle periods.
-    _PERIODIC_WIPE_SECONDS: ClassVar[int] = 600
+    # Periodic wipe of LAST_KNOWN_* state-change baselines. evict_object()
+    # handles the common explicit cases (window:destroy, children-changed:
+    # remove). This timer is the long-tail backstop for objects that never
+    # trigger an eviction event we hook. Held at upstream's 60s -- a longer
+    # interval lets stale baselines linger and miss real changes (the
+    # missing-events class of bug).
+    _PERIODIC_WIPE_SECONDS: ClassVar[int] = 60
 
     @staticmethod
     def _clear_stored_data() -> None:
