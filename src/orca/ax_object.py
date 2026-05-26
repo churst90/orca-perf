@@ -101,7 +101,6 @@ class AXObject:
     # are still memoized within a single event via the event_scope cache.
     LONG_LIVED_ROLES: ClassVar[dict[int, Atspi.Role]] = {}
     LONG_LIVED_PARENTS: ClassVar[dict[int, Atspi.Accessible | None]] = {}
-    LONG_LIVED_NAMES: ClassVar[dict[int, str]] = {}
     # Primitive-bits state cache. The earlier StateSet-object cache
     # (commits 7dd0f3905 / 6445b86e4) segfaulted because
     # Atspi.StateSet.contains() dereferences an internal pointer to the
@@ -169,14 +168,17 @@ class AXObject:
     def event_scope(label: str = "") -> Generator[None, None, None]:
         """Memoizes AT-SPI property reads within a single event handler.
 
-        Within the scope, get_role(), get_parent(), get_name(), and
-        get_state_set() return cached values keyed by hash(obj). The cache is
-        discarded on scope exit so values cannot go stale across events.
+        Within the scope, get_role(), get_parent(), and get_state_set()
+        return cached values keyed by hash(obj). get_name() is intentionally
+        uncached -- AT-SPI's own cache covers it and avoiding an Orca-side
+        layer eliminates stale-title bugs when toolkits silently rename
+        windows without firing accessible-name property-change events.
+        The scope cache is discarded on scope exit so values cannot go
+        stale across events.
         """
 
         AXObject._event_cache_tls.roles = {}
         AXObject._event_cache_tls.parents = {}
-        AXObject._event_cache_tls.names = {}
         AXObject._event_cache_tls.state_sets = {}
         AXObject._event_cache_tls.cleared = set()
 
@@ -209,7 +211,6 @@ class AXObject:
                 AXObject._perf_stats_tls.stats = None
             AXObject._event_cache_tls.roles = None
             AXObject._event_cache_tls.parents = None
-            AXObject._event_cache_tls.names = None
             AXObject._event_cache_tls.state_sets = None
             AXObject._event_cache_tls.cleared = None
 
@@ -254,12 +255,8 @@ class AXObject:
             with AXObject._lock:
                 AXObject.LONG_LIVED_ROLES.pop(key, None)
                 AXObject.LONG_LIVED_PARENTS.pop(key, None)
-                AXObject.LONG_LIVED_NAMES.pop(key, None)
                 AXObject.LONG_LIVED_STATES.pop(key, None)
                 AXObject.KNOWN_DEAD[key] = True
-        elif event_type == "object:property-change:accessible-name":
-            with AXObject._lock:
-                AXObject.LONG_LIVED_NAMES.pop(key, None)
         elif event_type == "object:property-change:accessible-role":
             with AXObject._lock:
                 AXObject.LONG_LIVED_ROLES.pop(key, None)
@@ -978,24 +975,6 @@ class AXObject:
         if not AXObject.is_valid(obj):
             return ""
 
-        key = hash(obj)
-        cache = getattr(AXObject._event_cache_tls, "names", None)
-
-        # Layer 1: event-scope cache
-        if cache is not None and key in cache:
-            AXObject._record_cache_hit()
-            return cache[key]
-
-        # Layer 2: long-lived name cache (invalidated on name-change events).
-        with AXObject._lock:
-            ll_name = AXObject.LONG_LIVED_NAMES.get(key)
-        if ll_name is not None:
-            if cache is not None:
-                cache[key] = ll_name
-            AXObject._record_ll_hit()
-            return ll_name
-
-        # Layer 3: AT-SPI call
         try:
             name = Atspi.Accessible.get_name(obj)
         except GLib.GError as error:
@@ -1004,15 +983,6 @@ class AXObject:
             return ""
 
         AXObject._set_known_dead_status(obj, False)
-
-        # Only cache non-empty names; empty string could mean "not yet set"
-        # in some toolkit implementations and we don't want to lock that in.
-        if name:
-            AXObject._ll_store(AXObject.LONG_LIVED_NAMES, key, name)
-        if cache is not None:
-            cache[key] = name
-            AXObject._record_cache_miss()
-
         return name
 
     @staticmethod
