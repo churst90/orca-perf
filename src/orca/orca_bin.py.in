@@ -282,15 +282,18 @@ def _approve_extension(extensions_dir: str, filename: str) -> int:
     """Approves a user extension for loading."""
 
     filepath = os.path.join(extensions_dir, filename)
-    if not os.path.isfile(filepath):
+    loader = extension_loader.get_loader()
+    if loader.approve_extension_path(filepath) is None:
         print(messages.CLI_EXTENSION_NOT_FOUND % filepath)
         return 1
 
-    loader = extension_loader.get_loader()
-    loader.approve_extension_file(filepath)
     print(messages.CLI_EXTENSION_APPROVED % filename)
 
-    class_name = loader.get_class_name(filepath)
+    if os.path.isdir(filepath):
+        manifest = loader._parse_manifest(filepath)  # pylint: disable=protected-access
+        class_name = (manifest or {}).get("entry", {}).get("class")
+    else:
+        class_name = loader.get_class_name(filepath)
     if class_name and class_name in loader.get_disabled_extensions():
         print(messages.CLI_EXTENSION_APPROVED_BUT_DISABLED % class_name)
 

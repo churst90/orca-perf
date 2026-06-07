@@ -52,13 +52,6 @@ _ = telemetry.get_telemetry()
 # default; init_from_environment() is a no-op when the env var is unset.
 from . import stress_mode  # noqa: E402  pylint: disable=wrong-import-position
 stress_mode.init_from_environment()
-
-# Side-effect: instantiates the OCRPresenter singleton so its Orca+R
-# keybinding is registered at startup. The presenter is harmless until
-# the keybinding is pressed; tesseract is checked at command time, not
-# at import.
-from . import ocr_presenter  # noqa: E402  pylint: disable=wrong-import-position
-_ = ocr_presenter.get_presenter()
 from .ax_object import AXObject
 from .ax_utilities import AXUtilities
 from .ax_value import AXValue

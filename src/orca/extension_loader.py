@@ -118,6 +118,24 @@ class ExtensionLoader:
         self.approve_extension(filename, file_hash)
         return file_hash
 
+    def approve_extension_path(self, path: str) -> "str | None":
+        """Approves the extension at path (single .py file or package dir).
+
+        For packages the approval is recorded under the directory name
+        with the recursive package hash, matching what _discover_package
+        verifies at load time. Returns the hash, or None if path is not
+        an extension.
+        """
+
+        if os.path.isfile(path):
+            return self.approve_extension_file(path)
+        if os.path.isdir(path) and os.path.isfile(os.path.join(path, "manifest.toml")):
+            name = os.path.basename(os.path.normpath(path))
+            pkg_hash = self._compute_package_hash(path)
+            self.approve_extension(name, pkg_hash)
+            return pkg_hash
+        return None
+
     def revoke_extension(self, filename: str) -> None:
         """Revokes approval for an extension (single-file OR package).
 

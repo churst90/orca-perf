@@ -57,7 +57,6 @@ from . import (
     learn_mode_presenter,
     messages,
     mouse_review,
-    ocr_presenter,
     orca,
     preferences_grid_base,
     presentation_manager,
@@ -312,11 +311,6 @@ class OrcaSetupGUI(Gtk.ApplicationWindow):  # pylint: disable=too-many-instance-
         self.stack.add_named(self.mouse_grid, "mouse")
         self._add_navigation_row("mouse", self.mouse_grid.get_label().get_text())
 
-        ocr_pres = ocr_presenter.get_presenter()
-        self.ocr_grid = ocr_pres.create_preferences_grid()
-        self.stack.add_named(self.ocr_grid, "ocr")
-        self._add_navigation_row("ocr", self.ocr_grid.get_label().get_text())
-
         self.extensions_grid = extensions_prefs_panel.create_preferences_grid()
         self.stack.add_named(self.extensions_grid, "extensions")
         self._add_navigation_row(
@@ -372,7 +366,6 @@ class OrcaSetupGUI(Gtk.ApplicationWindow):  # pylint: disable=too-many-instance-
             "spellcheck": self.spellcheck_grid,
             "chat": self.chat_grid,
             "mouse": self.mouse_grid,
-            "ocr": self.ocr_grid,
             "extensions": self.extensions_grid,
             "documents": self.document_grid,
             "pronunciation": self.pronunciation_grid,

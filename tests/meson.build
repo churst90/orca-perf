@@ -54,8 +54,6 @@ unit_tests = [
   'unit_tests/test_live_region_presenter.py',
   'unit_tests/test_notification_presenter.py',
   'unit_tests/test_object_navigator.py',
-  'unit_tests/test_ocr_buffer.py',
-  'unit_tests/test_ocr_engine.py',
   'unit_tests/test_orca_modifier_manager.py',
   'unit_tests/test_output_reader.py',
   'unit_tests/test_output_recorder.py',

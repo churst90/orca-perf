@@ -682,32 +682,6 @@ NOTIFICATIONS_RECEIVED_TIME = C_("notification presenter", "Received")
 # are associated with presenting notifications.
 KB_GROUP_NOTIFICATIONS = _("Notification presenter")
 
-# Translators: This string is a label for the group of Orca commands which
-# are associated with the OCR (optical character recognition) feature. OCR
-# captures the focused window's pixels, runs them through Tesseract, and
-# lets the user navigate the recognized text as a virtual buffer.
-KB_GROUP_OCR = _("OCR")
-
-# Translators: This is the title of the OCR page in the Orca preferences
-# dialog. It lets the user configure language, upscale factor, and
-# confidence threshold for OCR (optical character recognition).
-OCR_PAGE_TITLE = _("OCR")
-
-# Translators: Label for the OCR language picker in the Orca preferences
-# dialog. Picks which Tesseract language pack is used for recognition.
-OCR_LANGUAGE = _("Recognition _language:")
-
-# Translators: Label for the OCR upscale-factor control in the Orca
-# preferences dialog. Controls how much the captured image is enlarged
-# before being sent to Tesseract; larger factors improve recognition of
-# small text at the cost of latency.
-OCR_UPSCALE_FACTOR = _("Image _upscale factor:")
-
-# Translators: Label for the OCR confidence-threshold control in the
-# Orca preferences dialog. Tesseract reports a confidence per word in
-# the range 0-100. Words below the threshold are dropped as garbage.
-OCR_CONFIDENCE_THRESHOLD = _("Minimum word _confidence:")
-
 # Translators: Title of the Extensions page in the Orca preferences
 # dialog. Extensions are user-installable add-ons that extend Orca's
 # behavior.
