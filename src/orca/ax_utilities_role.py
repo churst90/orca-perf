@@ -588,8 +588,10 @@ class AXUtilitiesRole:
         if not isinstance(role, Atspi.Role):
             return AXObject.get_role_name(obj, True)
 
-        # orca-perf: NVDA-parity terminology for text fields ("edit", not "entry").
-        if role == Atspi.Role.ENTRY:
+        # orca-perf: NVDA-parity terminology for text fields ("edit", not
+        # "entry"/"text"). Read-only state is generated separately, so a
+        # read-only text area comes out as "read only edit" naturally.
+        if role in (Atspi.Role.ENTRY, Atspi.Role.TEXT):
             return object_properties.ROLE_EDITABLE_TEXT
         if role == Atspi.Role.PASSWORD_TEXT:
             return object_properties.ROLE_PASSWORD_EDIT
