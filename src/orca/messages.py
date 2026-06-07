@@ -2134,10 +2134,12 @@ SPEECH_VERBOSITY_BRIEF = C_("Speech", "Verbosity level: brief")
 SPEECH_VERBOSITY_VERBOSE = C_("Speech", "Verbosity level: verbose")
 
 # Translators: This message is presented to the user when Orca is launched.
-START_ORCA = _("Screen reader on.")
+# orca-perf: customized from upstream's "Screen reader on."
+START_ORCA = _("Orca ready.")
 
 # Translators: This message is presented to the user when Orca is quit.
-STOP_ORCA = _("Screen reader off.")
+# orca-perf: customized from upstream's "Screen reader off."
+STOP_ORCA = _("Quitting Orca.")
 
 # Translators: Orca has a command to present the contents of the status bar.
 # This is a brief message which will be presented if Orca cannot find the
