@@ -588,6 +588,12 @@ class AXUtilitiesRole:
         if not isinstance(role, Atspi.Role):
             return AXObject.get_role_name(obj, True)
 
+        # orca-perf: NVDA-parity terminology for text fields ("edit", not "entry").
+        if role == Atspi.Role.ENTRY:
+            return object_properties.ROLE_EDITABLE_TEXT
+        if role == Atspi.Role.PASSWORD_TEXT:
+            return object_properties.ROLE_PASSWORD_EDIT
+
         return Atspi.role_get_localized_name(role)
 
     @staticmethod

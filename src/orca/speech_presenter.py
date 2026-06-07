@@ -113,6 +113,12 @@ class ProgressBarVerbosity(Enum):
     WINDOW = 2
 
 
+_DEFAULT_ROLE_FIRST_ROLES = (
+    "link", "heading", "check-box", "push-button",
+    "radio-button", "page-tab", "entry", "toggle-button",
+)
+
+
 @dataclass(frozen=True)
 class SpeechPreference:
     """Descriptor for a single preference."""
@@ -802,6 +808,7 @@ class SpeechPresenter(Extension):
     KEY_SPEAK_ROLE_FIRST_DURING_CARET_NAVIGATION = (
         "speak-role-first-during-caret-navigation"
     )
+    KEY_SPEAK_ROLE_FIRST_ROLES = "speak-role-first-roles"
     KEY_SPEAK_WIDGET_MNEMONIC = "speak-widget-mnemonic"
     KEY_SPEAK_TUTORIAL_MESSAGES = "speak-tutorial-messages"
     KEY_REPEATED_CHARACTER_LIMIT = "repeated-character-limit"
@@ -1033,6 +1040,53 @@ class SpeechPresenter(Extension):
             value,
         )
         return True
+
+    @gsettings_registry.get_registry().gsetting(
+        key=KEY_SPEAK_ROLE_FIRST_ROLES,
+        schema="speech",
+        gtype="as",
+        default=[
+            "link", "heading", "check-box", "push-button",
+            "radio-button", "page-tab", "entry", "toggle-button",
+        ],
+        summary="Roles spoken before their content during caret navigation "
+                "(when speak-role-first-during-caret-navigation is on)",
+    )
+    @dbus_service.getter
+    def get_speak_role_first_roles(self) -> list[str]:
+        """Returns the role tokens that lead with their role during caret nav."""
+
+        return self._get_setting(
+            self.KEY_SPEAK_ROLE_FIRST_ROLES, "as", list(_DEFAULT_ROLE_FIRST_ROLES),
+        )
+
+    @dbus_service.setter
+    def set_speak_role_first_roles(self, value: list[str]) -> bool:
+        """Sets the role tokens that lead with their role during caret nav."""
+
+        msg = f"SPEECH PRESENTER: Setting speak role first roles to {value}."
+        debug.print_message(debug.LEVEL_INFO, msg, True)
+        gsettings_registry.get_registry().set_runtime_value(
+            self._SCHEMA,
+            self.KEY_SPEAK_ROLE_FIRST_ROLES,
+            value,
+        )
+        return True
+
+    def _get_role_first_token(self, token: str) -> bool:
+        """Returns whether token is in the role-first roles list."""
+
+        return token in self.get_speak_role_first_roles()
+
+    def _set_role_first_token(self, token: str, enabled: bool) -> bool:
+        """Adds or removes token from the role-first roles list."""
+
+        roles = list(self.get_speak_role_first_roles())
+        if enabled and token not in roles:
+            roles.append(token)
+        elif not enabled and token in roles:
+            roles.remove(token)
+        return self.set_speak_role_first_roles(roles)
 
     @gsettings_registry.get_registry().gsetting(
         key=KEY_SPEAK_WIDGET_MNEMONIC,
@@ -2965,6 +3019,7 @@ class SpeechPresenter(Extension):
             speak_role_first_during_caret_navigation=(
                 self.get_speak_role_first_during_caret_navigation()
             ),
+            speak_role_first_roles=frozenset(self.get_speak_role_first_roles()),
             speak_widget_mnemonic=self.get_speak_widget_mnemonic(),
             speak_blank_lines=self.get_speak_blank_lines(),
             speak_indentation=self.get_speak_indentation(),
@@ -3334,6 +3389,54 @@ class SpeechPresenter(Extension):
                 guilabels.SPEECH_SPEAK_ROLE_FIRST,
                 self.get_speak_role_first_during_caret_navigation,
                 self.set_speak_role_first_during_caret_navigation,
+            ),
+            SpeechPreference(
+                "speak-role-first-link",
+                guilabels.ROLE_FIRST_LINKS,
+                lambda t="link": self._get_role_first_token(t),
+                lambda value, t="link": self._set_role_first_token(t, value),
+            ),
+            SpeechPreference(
+                "speak-role-first-heading",
+                guilabels.ROLE_FIRST_HEADINGS,
+                lambda t="heading": self._get_role_first_token(t),
+                lambda value, t="heading": self._set_role_first_token(t, value),
+            ),
+            SpeechPreference(
+                "speak-role-first-check-box",
+                guilabels.ROLE_FIRST_CHECK_BOXES,
+                lambda t="check-box": self._get_role_first_token(t),
+                lambda value, t="check-box": self._set_role_first_token(t, value),
+            ),
+            SpeechPreference(
+                "speak-role-first-push-button",
+                guilabels.ROLE_FIRST_BUTTONS,
+                lambda t="push-button": self._get_role_first_token(t),
+                lambda value, t="push-button": self._set_role_first_token(t, value),
+            ),
+            SpeechPreference(
+                "speak-role-first-radio-button",
+                guilabels.ROLE_FIRST_RADIO_BUTTONS,
+                lambda t="radio-button": self._get_role_first_token(t),
+                lambda value, t="radio-button": self._set_role_first_token(t, value),
+            ),
+            SpeechPreference(
+                "speak-role-first-page-tab",
+                guilabels.ROLE_FIRST_TABS,
+                lambda t="page-tab": self._get_role_first_token(t),
+                lambda value, t="page-tab": self._set_role_first_token(t, value),
+            ),
+            SpeechPreference(
+                "speak-role-first-entry",
+                guilabels.ROLE_FIRST_EDIT_FIELDS,
+                lambda t="entry": self._get_role_first_token(t),
+                lambda value, t="entry": self._set_role_first_token(t, value),
+            ),
+            SpeechPreference(
+                "speak-role-first-toggle-button",
+                guilabels.ROLE_FIRST_TOGGLE_BUTTONS,
+                lambda t="toggle-button": self._get_role_first_token(t),
+                lambda value, t="toggle-button": self._set_role_first_token(t, value),
             ),
             SpeechPreference(
                 self.KEY_SPEAK_WIDGET_MNEMONIC,

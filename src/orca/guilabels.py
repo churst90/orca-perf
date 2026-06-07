@@ -2017,6 +2017,18 @@ SPEECH_SPEAK_CHILD_POSITION = _("Position in set")
 # keeps content-first ordering, matching NVDA behavior.
 SPEECH_SPEAK_ROLE_FIRST = _("Speak role before content when arrowing")
 
+# Translators: orca-perf. Per-role switches controlling which roles get the
+# role-before-content ordering during caret navigation. Shown indented under
+# the "Speak role before content when arrowing" master switch.
+ROLE_FIRST_LINKS = _("Role first: links")
+ROLE_FIRST_HEADINGS = _("Role first: headings")
+ROLE_FIRST_CHECK_BOXES = _("Role first: check boxes")
+ROLE_FIRST_BUTTONS = _("Role first: buttons")
+ROLE_FIRST_RADIO_BUTTONS = _("Role first: radio buttons")
+ROLE_FIRST_TABS = _("Role first: tabs")
+ROLE_FIRST_EDIT_FIELDS = _("Role first: edit fields")
+ROLE_FIRST_TOGGLE_BUTTONS = _("Role first: toggle buttons")
+
 # Translators: This widget is associated with the setting that determines
 # what happens if a user presses Up or Down arrow to move row by row in a GUI
 # table, such as a GtkTreeView. Document tables, such as those found in Writer

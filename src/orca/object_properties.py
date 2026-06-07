@@ -363,6 +363,11 @@ ROLE_SCROLL_BAR_VERTICAL = _("vertical scroll bar")
 # The reason we include the orientation as part of the role is because in some
 # applications and toolkits, it can dictate which keyboard keys should be used
 # to modify the value of the widget.
+# Translators: orca-perf NVDA-parity terminology: text fields are presented
+# as "edit" rather than AT-SPI's "entry" / "password text".
+ROLE_EDITABLE_TEXT = _("edit")
+ROLE_PASSWORD_EDIT = _("password edit")
+
 ROLE_SLIDER_HORIZONTAL = _("horizontal slider")
 
 # Translators: This string should be treated as a role describing an object.

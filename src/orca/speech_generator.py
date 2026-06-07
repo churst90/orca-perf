@@ -88,6 +88,7 @@ class SpeechGeneratorContext(GeneratorContext):
     speak_tutorial_messages: bool
     speak_position_in_set: bool
     speak_role_first_during_caret_navigation: bool
+    speak_role_first_roles: "frozenset[str]"
     speak_widget_mnemonic: bool
     speak_blank_lines: bool
     speak_indentation: bool
@@ -2435,9 +2436,14 @@ class SpeechGenerator(generator.Generator):
             return self._generate_state_checked(obj)
 
         result = self._generate_default_prefix(obj)
+        role = self._generate_accessible_role(obj)
+        lead = self._role_should_lead(obj)
+        if lead:
+            result += role
         result += self._generate_accessible_label_and_name(obj)
         result += self._generate_state_read_only(obj)
-        result += self._generate_accessible_role(obj)
+        if not lead:
+            result += role
         result += self._generate_state_checked(obj)
         result += self._generate_state_required(obj)
         result += self._generate_pause(obj)
@@ -2842,9 +2848,14 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the entry role."""
 
         result = self._generate_default_prefix(obj)
+        role = self._generate_accessible_role(obj)
+        lead = self._role_should_lead(obj)
+        if lead:
+            result += role
         result += self._generate_accessible_label_and_name(obj)
         result += self._generate_state_read_only(obj)
-        result += self._generate_accessible_role(obj)
+        if not lead:
+            result += role
         result += self._generate_text_indentation(obj)
         result += self._generate_text_line(
             obj,
@@ -2979,19 +2990,35 @@ class SpeechGenerator(generator.Generator):
         result += self._generate_default_suffix(obj)
         return result
 
-    def _role_should_lead(self) -> bool:
+    _ROLE_FIRST_TOKENS = {
+        Atspi.Role.LINK: "link",
+        Atspi.Role.HEADING: "heading",
+        Atspi.Role.CHECK_BOX: "check-box",
+        Atspi.Role.PUSH_BUTTON: "push-button",
+        Atspi.Role.RADIO_BUTTON: "radio-button",
+        Atspi.Role.PAGE_TAB: "page-tab",
+        Atspi.Role.ENTRY: "entry",
+        Atspi.Role.PASSWORD_TEXT: "entry",
+        Atspi.Role.TOGGLE_BUTTON: "toggle-button",
+    }
+
+    def _role_should_lead(self, obj: Atspi.Accessible) -> bool:
         """Returns True if the role should be spoken before the content.
 
         orca-perf NVDA-parity: during caret navigation (arrowing through
         content), announce what something is before reading it ("link
         Download"). Commands that explicitly target a role (structural
         navigation, where-am-i) keep content-first ordering, since the
-        user already knows what they asked for.
+        user already knows what they asked for. Per-role opt-out via the
+        speak-role-first-roles list setting.
         """
 
         if not self._context.speak_role_first_during_caret_navigation:
             return False
         if self._is_where_am_i():
+            return False
+        token = self._ROLE_FIRST_TOKENS.get(self._get_resolved_role(obj))
+        if token is None or token not in self._context.speak_role_first_roles:
             return False
         return input_event_manager.get_manager().last_event_was_caret_navigation()
 
@@ -3001,7 +3028,7 @@ class SpeechGenerator(generator.Generator):
         result = self._generate_default_prefix(obj)
         content = self._generate_text_content(obj)
         role = self._generate_accessible_role(obj)
-        if self._role_should_lead():
+        if self._role_should_lead(obj):
             result += role + content
         else:
             result += content + role
@@ -3165,7 +3192,7 @@ class SpeechGenerator(generator.Generator):
             obj,
         ) or self._generate_text_content(obj)
         role = self._generate_accessible_role(obj)
-        if self._role_should_lead():
+        if self._role_should_lead(obj):
             result += role + name
         else:
             result += name + role
@@ -3381,9 +3408,14 @@ class SpeechGenerator(generator.Generator):
             return result
 
         result = self._generate_default_prefix(obj)
+        role = self._generate_accessible_role(obj)
+        lead = self._role_should_lead(obj)
+        if lead:
+            result += role
         result += self._generate_accessible_label_and_name(obj)
         result += self._generate_state_expanded(obj)
-        result += self._generate_accessible_role(obj)
+        if not lead:
+            result += role
         result += self._generate_state_sensitive(obj)
         result += self._generate_pause(obj)
         result += self._generate_keyboard_mnemonic(obj)
@@ -3421,9 +3453,14 @@ class SpeechGenerator(generator.Generator):
         """Generates speech for the paragraph role."""
 
         result = self._generate_default_prefix(obj)
+        role = self._generate_accessible_role(obj)
+        lead = self._role_should_lead(obj)
+        if lead:
+            result += role
         result += self._generate_accessible_label_and_name(obj)
         result += self._generate_state_read_only(obj)
-        result += self._generate_accessible_role(obj)
+        if not lead:
+            result += role
         result += self._generate_text_indentation(obj)
         result += self._generate_text_line(obj)
         result += self._generate_pause(obj)
@@ -3472,9 +3509,14 @@ class SpeechGenerator(generator.Generator):
             return self._generate_state_expanded(obj)
 
         result = self._generate_default_prefix(obj)
+        role = self._generate_accessible_role(obj)
+        lead = self._role_should_lead(obj)
+        if lead:
+            result += role
         result += self._generate_accessible_label_and_name(obj)
         result += self._generate_state_expanded(obj)
-        result += self._generate_accessible_role(obj)
+        if not lead:
+            result += role
         result += self._generate_state_sensitive(obj)
         result += self._generate_pause(obj)
         result += self._generate_keyboard_mnemonic(obj)
@@ -3501,9 +3543,14 @@ class SpeechGenerator(generator.Generator):
             result += self._generate_new_radio_button_group(obj)
 
         result += self._generate_pause(obj)
+        role = self._generate_accessible_role(obj)
+        lead = self._role_should_lead(obj)
+        if lead:
+            result += role
         result += self._generate_accessible_label_and_name(obj)
         result += self._generate_state_selected_for_radio_button(obj)
-        result += self._generate_accessible_role(obj)
+        if not lead:
+            result += role
         if not AXUtilities.is_focused(obj):
             return result
 
@@ -4005,8 +4052,13 @@ class SpeechGenerator(generator.Generator):
             )
 
         result = self._generate_default_prefix(obj)
+        role = self._generate_accessible_role(obj)
+        lead = self._role_should_lead(obj)
+        if lead:
+            result += role
         result += self._generate_accessible_label_and_name(obj)
-        result += self._generate_accessible_role(obj)
+        if not lead:
+            result += role
         result += self._generate_state_expanded(obj) or self._generate_state_pressed(
             obj,
         )
