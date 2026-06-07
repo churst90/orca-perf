@@ -799,6 +799,9 @@ class SpeechPresenter(Extension):
     KEY_SPEAK_MISSPELLED_INDICATOR = "speak-misspelled-indicator"
     KEY_SPEAK_DESCRIPTION = "speak-description"
     KEY_SPEAK_POSITION_IN_SET = "speak-position-in-set"
+    KEY_SPEAK_ROLE_FIRST_DURING_CARET_NAVIGATION = (
+        "speak-role-first-during-caret-navigation"
+    )
     KEY_SPEAK_WIDGET_MNEMONIC = "speak-widget-mnemonic"
     KEY_SPEAK_TUTORIAL_MESSAGES = "speak-tutorial-messages"
     KEY_REPEATED_CHARACTER_LIMIT = "repeated-character-limit"
@@ -998,6 +1001,35 @@ class SpeechPresenter(Extension):
         gsettings_registry.get_registry().set_runtime_value(
             self._SCHEMA,
             self.KEY_SPEAK_POSITION_IN_SET,
+            value,
+        )
+        return True
+
+    @gsettings_registry.get_registry().gsetting(
+        key=KEY_SPEAK_ROLE_FIRST_DURING_CARET_NAVIGATION,
+        schema="speech",
+        gtype="b",
+        default=False,
+        summary="Speak role before content for links/headings during caret navigation "
+                "(NVDA-style ordering; structural navigation stays content-first)",
+    )
+    @dbus_service.getter
+    def get_speak_role_first_during_caret_navigation(self) -> bool:
+        """Returns whether role precedes content during caret navigation."""
+
+        return self._get_setting(
+            self.KEY_SPEAK_ROLE_FIRST_DURING_CARET_NAVIGATION, "b", False,
+        )
+
+    @dbus_service.setter
+    def set_speak_role_first_during_caret_navigation(self, value: bool) -> bool:
+        """Sets whether role precedes content during caret navigation."""
+
+        msg = f"SPEECH PRESENTER: Setting speak role first during caret navigation to {value}."
+        debug.print_message(debug.LEVEL_INFO, msg, True)
+        gsettings_registry.get_registry().set_runtime_value(
+            self._SCHEMA,
+            self.KEY_SPEAK_ROLE_FIRST_DURING_CARET_NAVIGATION,
             value,
         )
         return True
@@ -2930,6 +2962,9 @@ class SpeechPresenter(Extension):
             speak_description=self.get_speak_description(),
             speak_tutorial_messages=self.get_speak_tutorial_messages(),
             speak_position_in_set=self.get_speak_position_in_set(),
+            speak_role_first_during_caret_navigation=(
+                self.get_speak_role_first_during_caret_navigation()
+            ),
             speak_widget_mnemonic=self.get_speak_widget_mnemonic(),
             speak_blank_lines=self.get_speak_blank_lines(),
             speak_indentation=self.get_speak_indentation(),
@@ -3293,6 +3328,12 @@ class SpeechPresenter(Extension):
                 guilabels.SPEECH_SPEAK_CHILD_POSITION,
                 self.get_speak_position_in_set,
                 self.set_speak_position_in_set,
+            ),
+            SpeechPreference(
+                self.KEY_SPEAK_ROLE_FIRST_DURING_CARET_NAVIGATION,
+                guilabels.SPEECH_SPEAK_ROLE_FIRST,
+                self.get_speak_role_first_during_caret_navigation,
+                self.set_speak_role_first_during_caret_navigation,
             ),
             SpeechPreference(
                 self.KEY_SPEAK_WIDGET_MNEMONIC,

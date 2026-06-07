@@ -2010,6 +2010,13 @@ SPEECH_SPEAK_BLANK_LINES = _("Blank lines")
 # position (e.g., item 6 of 7).
 SPEECH_SPEAK_CHILD_POSITION = _("Position in set")
 
+# Translators: orca-perf NVDA-parity feature. When enabled and the user is
+# moving the caret (arrowing by line/word/character) through content, the
+# role of links and headings is spoken before their content ("link Download")
+# instead of after ("Download link"). Structural navigation (H, K, etc.)
+# keeps content-first ordering, matching NVDA behavior.
+SPEECH_SPEAK_ROLE_FIRST = _("Speak role before content when arrowing")
+
 # Translators: This widget is associated with the setting that determines
 # what happens if a user presses Up or Down arrow to move row by row in a GUI
 # table, such as a GtkTreeView. Document tables, such as those found in Writer

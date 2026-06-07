@@ -87,6 +87,7 @@ class SpeechGeneratorContext(GeneratorContext):
     speak_description: bool
     speak_tutorial_messages: bool
     speak_position_in_set: bool
+    speak_role_first_during_caret_navigation: bool
     speak_widget_mnemonic: bool
     speak_blank_lines: bool
     speak_indentation: bool
@@ -2978,12 +2979,32 @@ class SpeechGenerator(generator.Generator):
         result += self._generate_default_suffix(obj)
         return result
 
+    def _role_should_lead(self) -> bool:
+        """Returns True if the role should be spoken before the content.
+
+        orca-perf NVDA-parity: during caret navigation (arrowing through
+        content), announce what something is before reading it ("link
+        Download"). Commands that explicitly target a role (structural
+        navigation, where-am-i) keep content-first ordering, since the
+        user already knows what they asked for.
+        """
+
+        if not self._context.speak_role_first_during_caret_navigation:
+            return False
+        if self._is_where_am_i():
+            return False
+        return input_event_manager.get_manager().last_event_was_caret_navigation()
+
     def _generate_heading(self, obj: Atspi.Accessible) -> list[Any]:
         """Generates speech for the heading role."""
 
         result = self._generate_default_prefix(obj)
-        result += self._generate_text_content(obj)
-        result += self._generate_accessible_role(obj)
+        content = self._generate_text_content(obj)
+        role = self._generate_accessible_role(obj)
+        if self._role_should_lead():
+            result += role + content
+        else:
+            result += content + role
         result += self._generate_state_expanded(obj)
         result += self._generate_default_suffix(obj)
         return result
@@ -3140,10 +3161,14 @@ class SpeechGenerator(generator.Generator):
             result += self._generate_link_file_size(obj)
             return result
 
-        result += self._generate_accessible_label_and_name(
+        name = self._generate_accessible_label_and_name(
             obj,
         ) or self._generate_text_content(obj)
-        result += self._generate_accessible_role(obj)
+        role = self._generate_accessible_role(obj)
+        if self._role_should_lead():
+            result += role + name
+        else:
+            result += name + role
         result += self._generate_state_expanded(obj)
         result += self._generate_pause(obj)
         result += self._generate_keyboard_mnemonic(obj)
