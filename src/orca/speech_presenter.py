@@ -2287,10 +2287,14 @@ class SpeechPresenter(Extension):
 
         def replacement(match):
             char = match.group(1)
-            count = len(match.group(0))
-            if match.start() > 0 and text[match.start() - 1].isalnum():
-                return f" {messages.repeated_char_count(char, count)}"
-            return messages.repeated_char_count(char, count)
+            # orca-perf NVDA-parity: speak the symbol a capped three times
+            # ("dash dash dash") rather than a count ("16 dash characters").
+            # Iconic beats numeric - the phrase sounds like the line itself,
+            # and the trailing "characters" can no longer run into the
+            # following text. Exact widths remain available via flat review
+            # and character navigation. messages.repeated_char_count is
+            # intentionally left in place (upstream code, unused here).
+            return f" {char} {char} {char} "
 
         limit = self.get_repeated_character_limit()
         if len(text) < 4 or limit < 4:
