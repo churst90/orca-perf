@@ -2171,7 +2171,7 @@ class SpeechManager(Extension):
         key=KEY_SYNTHESIZER,
         schema="speech",
         gtype="s",
-        default="",
+        default="voxin",
         summary="Speech synthesizer",
     )
     @dbus_service.getter
@@ -3143,7 +3143,7 @@ class SpeechManager(Extension):
         key=KEY_PUNCTUATION_LEVEL,
         schema="speech",
         genum="org.gnome.Orca.PunctuationStyle",
-        default="most",
+        default="some",
         summary="Punctuation verbosity level (none, some, most, all)",
         migration_key="verbalizePunctuationStyle",
     )
@@ -3417,7 +3417,7 @@ class SpeechManager(Extension):
         key=KEY_INSERT_PAUSES_BETWEEN_UTTERANCES,
         schema="speech",
         gtype="b",
-        default=True,
+        default=False,
         summary="Insert pauses between utterances",
         migration_key="enablePauseBreaks",
     )

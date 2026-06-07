@@ -751,7 +751,7 @@ class StructuralNavigator(Extension):
         key=KEY_WRAPS,
         schema="structural-navigation",
         gtype="b",
-        default=True,
+        default=False,
         summary="Wrap when reaching top/bottom",
         migration_key="wrappedStructuralNavigation",
     )

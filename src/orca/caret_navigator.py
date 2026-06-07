@@ -274,7 +274,7 @@ class CaretNavigator(Extension):
         key=KEY_LAYOUT_MODE,
         schema="caret-navigation",
         gtype="b",
-        default=True,
+        default=False,
         summary="Use document layout mode",
         migration_key="layoutMode",
     )

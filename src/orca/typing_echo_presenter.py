@@ -412,7 +412,7 @@ class TypingEchoPresenter(Extension):
         key=KEY_KEY_ECHO,
         schema="typing-echo",
         gtype="b",
-        default=True,
+        default=False,
         summary="Enable key echo",
         migration_key="enableKeyEcho",
     )

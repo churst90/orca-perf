@@ -962,7 +962,7 @@ class SpeechPresenter(Extension):
         key=KEY_SPEAK_DESCRIPTION,
         schema="speech",
         gtype="b",
-        default=True,
+        default=False,
         summary="Speak object descriptions",
         migration_key="speakDescription",
     )
@@ -989,7 +989,7 @@ class SpeechPresenter(Extension):
         key=KEY_SPEAK_POSITION_IN_SET,
         schema="speech",
         gtype="b",
-        default=False,
+        default=True,
         summary="Speak position in set",
         migration_key="enablePositionSpeaking",
     )
@@ -1016,7 +1016,7 @@ class SpeechPresenter(Extension):
         key=KEY_SPEAK_ROLE_FIRST_DURING_CARET_NAVIGATION,
         schema="speech",
         gtype="b",
-        default=False,
+        default=True,
         summary="Speak role before content for links/headings during caret navigation "
                 "(NVDA-style ordering; structural navigation stays content-first)",
     )
@@ -1741,7 +1741,7 @@ class SpeechPresenter(Extension):
         key=KEY_PROGRESS_BAR_SPEECH_INTERVAL,
         schema="speech",
         gtype="i",
-        default=10,
+        default=5,
         summary="Progress bar speech update interval in seconds",
         migration_key="progressBarSpeechInterval",
     )
@@ -1871,7 +1871,7 @@ class SpeechPresenter(Extension):
         key=KEY_VERBOSITY_LEVEL,
         schema="speech",
         genum="org.gnome.Orca.VerbosityLevel",
-        default="verbose",
+        default="brief",
         summary="Speech verbosity level (brief, verbose)",
         migration_key="speechVerbosityLevel",
     )

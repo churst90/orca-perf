@@ -255,7 +255,7 @@ class SystemInformationPresenter(Extension):
         key=KEY_DATE_FORMAT,
         schema="system-information",
         gtype="s",
-        default="%x",
+        default="%A, %B %-d, %Y",
         summary="Date format string",
         migration_key="presentDateFormat",
     )
@@ -297,7 +297,7 @@ class SystemInformationPresenter(Extension):
         key=KEY_TIME_FORMAT,
         schema="system-information",
         gtype="s",
-        default="%X",
+        default="%I:%M %p",
         summary="Time format string",
         migration_key="presentTimeFormat",
     )

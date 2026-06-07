@@ -582,7 +582,7 @@ class MouseReviewer(Extension):
         key=KEY_PRESENT_TOOLTIPS,
         schema="mouse-review",
         gtype="b",
-        default=False,
+        default=True,
         summary="Present tooltips on mouse hover",
         migration_key="presentToolTips",
     )
@@ -607,7 +607,7 @@ class MouseReviewer(Extension):
         key=KEY_ENABLED,
         schema="mouse-review",
         gtype="b",
-        default=False,
+        default=True,
         summary="Enable mouse review",
         migration_key="enableMouseReview",
     )

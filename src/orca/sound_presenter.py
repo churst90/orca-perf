@@ -374,7 +374,7 @@ class SoundPresenter:
         key=KEY_PROGRESS_BAR_BEEP_INTERVAL,
         schema="sound",
         gtype="i",
-        default=0,
+        default=5,
         summary="Progress bar beep interval in seconds",
         migration_key="progressBarBeepInterval",
     )

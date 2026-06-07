@@ -1189,7 +1189,7 @@ class DocumentPresenter(Extension):
         key=KEY_SAY_ALL_ON_LOAD,
         schema="document",
         gtype="b",
-        default=True,
+        default=False,
         summary="Perform say all when document loads",
         migration_key="sayAllOnLoad",
     )

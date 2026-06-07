@@ -954,7 +954,7 @@ class BraillePresenter(Extension):
         key=KEY_ENABLED,
         schema="braille",
         gtype="b",
-        default=True,
+        default=False,
         summary="Enable braille output",
         migration_key="enableBraille",
     )
@@ -1323,7 +1323,7 @@ class BraillePresenter(Extension):
         key=KEY_CONTRACTION_TABLE,
         schema="braille",
         gtype="s",
-        default="",
+        default="/usr/share/liblouis/tables/en-us-g1.ctb",
         summary="Braille contraction table name",
         migration_key="brailleContractionTable",
     )
