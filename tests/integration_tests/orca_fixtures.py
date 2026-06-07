@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,8 @@ from .apps import (
     gtk3_text_view,
     gtk3_toolbar,
     gtk3_tree_view,
+    gtk3_two_entries,
+    gtk3_two_windows,
     gtk3_widget_notebook,
 )
 from .harness import sandbox
@@ -112,6 +115,8 @@ _gtk3_text_view = _make_native_app_fixture(
     ),
 )
 _gtk3_tree_view = _make_native_app_fixture(gtk3_tree_view, scope="function")
+_gtk3_two_entries = _make_native_app_fixture(gtk3_two_entries, scope="function")
+_gtk3_two_windows = _make_native_app_fixture(gtk3_two_windows, scope="function")
 _gtk3_widget_notebook = _make_native_app_fixture(gtk3_widget_notebook)
 _gtk3_toolbar = _make_native_app_fixture(gtk3_toolbar, scope="function")
 
@@ -137,8 +142,23 @@ def _make_terminal_fixture(
 _gtk3_terminal_shell = _make_terminal_fixture(
     "gtk3_terminal_shell", binary_names=("bash",), args=("--norc", "--noprofile")
 )
+_LIVE_UPDATE_HOLD = 3.0 * float(os.environ.get("ORCA_TEST_TIMEOUT_SCALE") or 1.0)
+_gtk3_terminal_flatrev = _make_terminal_fixture(
+    "gtk3_terminal_flatrev",
+    binary_names=("bash",),
+    args=("--norc", "--noprofile"),
+    files={"t.sh": f"printf c1; sleep {_LIVE_UPDATE_HOLD:g}; printf '\\rc2'; echo\n"},
+)
 _gtk3_terminal_pager = _make_terminal_fixture(
     "gtk3_terminal_pager", binary_names=("less",), args=("doc.txt",), files={"doc.txt": _PAGER_DOC}
+)
+
+_WIDE_PAGER_DOC = "top\nthis line is wider than the display now\nbottom\n"
+_gtk3_terminal_wide_pager = _make_terminal_fixture(
+    "gtk3_terminal_wide_pager",
+    binary_names=("less",),
+    args=("doc.txt",),
+    files={"doc.txt": _WIDE_PAGER_DOC},
 )
 _gtk3_terminal_vim = _make_terminal_fixture(
     "gtk3_terminal_vim",
@@ -223,6 +243,7 @@ def _run_app_with_orca(
             orca.set("SpeechPresenter", "LogFile", str(speech_log))
             orca.set("BraillePresenter", "LogFile", str(braille_log))
             reader = OutputReader(str(speech_log), str(braille_log))
+            reader.set_idle_check(orca.is_idle)
             reader.start()
             try:
                 yield NativeAppSession(orca=orca, reader=reader)
@@ -338,11 +359,31 @@ def _resolve_binary(names: tuple[str, ...]) -> str | None:
     return None
 
 
+def _document_loaded(accessible: Atspi.Accessible) -> bool:
+    """Predicate: the app has a document-role descendant with content (no title to match)."""
+
+    stack = [accessible]
+    while stack:
+        node = stack.pop()
+        try:
+            count = node.get_child_count()
+            if "document" in node.get_role_name() and count:
+                return True
+        except GLib.GError:
+            continue
+        for index in range(count):
+            with contextlib.suppress(GLib.GError):
+                stack.append(node.get_child_at_index(index))
+    return False
+
+
 def _run_browser_session(
     tmp_path_factory: pytest.TempPathFactory,
     *,
     app: ModuleType,
     page: str,
+    caret_browsing: bool = False,
+    ready_predicate: Callable[[Atspi.Accessible], bool] | None = None,
 ) -> Iterator[NativeAppSession]:
     """Launches app loading web_pages/<page> under its own Orca subprocess."""
 
@@ -367,30 +408,54 @@ def _run_browser_session(
         str(profile_dir),
         binary,
     ]
+    if caret_browsing:
+        argv.append("--enable-caret-browsing")
     yield from _run_app_with_orca(
         sandbox_dir,
         argv=argv,
-        ready_predicate=_name_suffix(app.READY_SUFFIX),
+        ready_predicate=ready_predicate or _name_suffix(app.READY_SUFFIX),
     )
 
 
 _BROWSER_APPS: dict[str, ModuleType] = {"chromium": chromium_browser}
 
 
-def _make_web_fixture(page: str) -> Callable[..., Iterator[NativeAppSession]]:
+def _make_web_fixture(
+    page: str, *, caret_browsing: bool = False
+) -> Callable[..., Iterator[NativeAppSession]]:
     @pytest.fixture(scope="session", name=Path(page).stem, params=["chromium"])
     def fixture(
         request: pytest.FixtureRequest,
         tmp_path_factory: pytest.TempPathFactory,
     ) -> Iterator[NativeAppSession]:
         yield from _run_browser_session(
-            tmp_path_factory, app=_BROWSER_APPS[request.param], page=page
+            tmp_path_factory,
+            app=_BROWSER_APPS[request.param],
+            page=page,
+            caret_browsing=caret_browsing,
+        )
+
+    return fixture
+
+
+def _make_plain_text_fixture(page: str) -> Callable[..., Iterator[NativeAppSession]]:
+    @pytest.fixture(scope="session", name=Path(page).stem, params=["chromium"])
+    def fixture(
+        request: pytest.FixtureRequest,
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> Iterator[NativeAppSession]:
+        yield from _run_browser_session(
+            tmp_path_factory,
+            app=_BROWSER_APPS[request.param],
+            page=page,
+            ready_predicate=_document_loaded,
         )
 
     return fixture
 
 
 _web_basic = _make_web_fixture("web_basic.html")
+_web_plain_text = _make_plain_text_fixture("web_plain_text.txt")
 _web_languages = _make_web_fixture("web_languages.html")
 _web_tables = _make_web_fixture("web_tables.html")
 _web_form_fields = _make_web_fixture("web_form_fields.html")
@@ -409,3 +474,19 @@ _web_text_attributes = _make_web_fixture("web_text_attributes.html")
 _web_tree = _make_web_fixture("web_tree.html")
 _web_live_regions = _make_web_fixture("web_live_regions.html")
 _web_dialogs = _make_web_fixture("web_dialogs.html")
+_web_aria_spinbutton = _make_web_fixture("web_aria_spinbutton.html")
+_web_autocomplete = _make_web_fixture("web_autocomplete.html")
+_web_dynamic_content = _make_web_fixture("web_dynamic_content.html")
+_web_caret_context = _make_web_fixture("web_caret_context.html")
+_web_redundant_content = _make_web_fixture("web_redundant_content.html")
+_web_editing = _make_web_fixture("web_editing.html")
+_web_long_line = _make_web_fixture("web_long_line.html")
+_web_sortable_table = _make_web_fixture("web_sortable_table.html")
+_web_page_up_down = _make_web_fixture("web_page_up_down.html", caret_browsing=True)
+_web_image_link = _make_web_fixture("web_image_link.html")
+_web_useless_images = _make_web_fixture("web_useless_images.html")
+_web_offscreen_labels = _make_web_fixture("web_offscreen_labels.html")
+_web_option_removal = _make_web_fixture("web_option_removal.html")
+_web_alert = _make_web_fixture("web_alert.html")
+_web_contracted_braille = _make_web_fixture("web_contracted_braille.html", caret_browsing=True)
+_web_attribute_mask = _make_web_fixture("web_attribute_mask.html", caret_browsing=True)

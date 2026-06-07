@@ -63,6 +63,7 @@ from .util.debounce import DebouncedCallable
 from .ax_table import AXTable
 from .ax_text import AXText
 from .ax_utilities import AXUtilities
+from .ax_utilities_text import CaretSetReason
 from .command import Command, KeyboardCommand
 from .extension import Extension
 from .structural_navigator_registry import get_registry
@@ -1244,10 +1245,12 @@ class StructuralNavigator(Extension):
             debug.print_message(debug.LEVEL_INFO, msg, True)
             manager.set_locus_of_focus(None, obj, False)
             if AXObject.supports_text(obj):
-                script.utilities.set_caret_position(obj, offset or 0)
+                script.utilities.set_caret_position(
+                    obj, offset or 0, reason=CaretSetReason.STRUCTURAL_NAVIGATION
+                )
             return
 
-        script.update_braille(obj)
+        script.update_braille(obj, offset)
         script.say_line(obj, offset)
 
     def _present_object(
@@ -1289,7 +1292,9 @@ class StructuralNavigator(Extension):
             debug.print_message(debug.LEVEL_INFO, msg, True)
             manager.set_locus_of_focus(None, obj, False)
             if AXObject.supports_text(obj):
-                script.utilities.set_caret_position(obj, offset)
+                script.utilities.set_caret_position(
+                    obj, offset, reason=CaretSetReason.STRUCTURAL_NAVIGATION
+                )
             return
 
         # Held-key coalescing: script.present_object below calls
@@ -2307,8 +2312,6 @@ class StructuralNavigator(Extension):
             self._present_object(script, obj, messages.NO_MORE_LANDMARKS, notify_user=notify_user)
             return
 
-        if notify_user:
-            presentation_manager.get_manager().present_message(AXObject.get_name(obj))
         self._present_line(script, obj, 0)
 
     @dbus_service.command

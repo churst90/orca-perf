@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, NamedTuple
 
 from orca.output_reader import BrailleRecord, SpeechRecord
@@ -29,7 +30,12 @@ from orca.output_reader import BrailleRecord, SpeechRecord
 from .harness import keyboard
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from .orca_fixtures import NativeAppSession
+
+PAN_LEFT_COMMAND = "panBrailleLeftHandler"
+PAN_RIGHT_COMMAND = "panBrailleRightHandler"
 
 
 class BrailleLine(NamedTuple):
@@ -41,21 +47,51 @@ class BrailleLine(NamedTuple):
     mask: str | None = None
 
 
+_PROMPT_QUIESCENCE = 0.1
+_ASYNC_QUIESCENCE = 0.5
+
+
+def _drain(
+    session: NativeAppSession, quiescence: float | None, overall: float, wait_async: bool
+) -> list:
+    """Drains output, idle-gated for prompt output and patient for app-delayed output."""
+
+    if wait_async:
+        return session.reader.drain(
+            quiescence_timeout=_ASYNC_QUIESCENCE if quiescence is None else quiescence,
+            overall_timeout=overall,
+            first_record_timeout=overall,
+            idle_aware=False,
+        )
+    return session.reader.drain(
+        quiescence_timeout=_PROMPT_QUIESCENCE if quiescence is None else quiescence,
+        overall_timeout=overall,
+    )
+
+
 def speech(
-    session: NativeAppSession, *, quiescence: float = 0.3, overall: float = 2.0
+    session: NativeAppSession,
+    *,
+    quiescence: float | None = None,
+    overall: float = 2.0,
+    wait_async: bool = False,
 ) -> list[str]:
     """Returns the speech captured until the output stream goes quiet."""
 
-    records = session.reader.drain(quiescence_timeout=quiescence, overall_timeout=overall)
+    records = _drain(session, quiescence, overall, wait_async)
     return [r.text for r in records if isinstance(r, SpeechRecord)]
 
 
 def capture(
-    session: NativeAppSession, *, quiescence: float = 0.3, overall: float = 2.0
+    session: NativeAppSession,
+    *,
+    quiescence: float | None = None,
+    overall: float = 2.0,
+    wait_async: bool = False,
 ) -> tuple[list[str], list[BrailleLine]]:
     """Returns the (speech, braille) captured until the output stream goes quiet."""
 
-    records = session.reader.drain(quiescence_timeout=quiescence, overall_timeout=overall)
+    records = _drain(session, quiescence, overall, wait_async)
     spoken = [r.text for r in records if isinstance(r, SpeechRecord)]
     brailled = [
         BrailleLine(r.cursor_cell, r.full, r.visible, r.mask)
@@ -65,16 +101,16 @@ def capture(
     return spoken, brailled
 
 
-def tab(session: NativeAppSession) -> None:
-    """Tabs to the next control and discards its focus announcement."""
+def tab_and_swallow_presentation(session: NativeAppSession) -> None:
+    """Tabs to the next control and throws away everything Orca presented about it."""
 
     keyboard.tap_key(keyboard.KEYSYM_TAB)
-    session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+    session.reader.drain(quiescence_timeout=0.1, overall_timeout=2.0)
     session.reader.reset()
 
 
 def move_to_top(
-    session: NativeAppSession, *, quiescence: float = 0.3, overall: float = 2.0
+    session: NativeAppSession, *, quiescence: float = 0.1, overall: float = 2.0
 ) -> None:
     """Moves to the top of the document and discards the resulting output."""
 
@@ -84,7 +120,7 @@ def move_to_top(
 
 
 def move_to_bottom(
-    session: NativeAppSession, *, quiescence: float = 0.3, overall: float = 2.0
+    session: NativeAppSession, *, quiescence: float = 0.1, overall: float = 2.0
 ) -> None:
     """Moves to the bottom of the document and discards the resulting output."""
 
@@ -97,8 +133,24 @@ def toggle_flat_review(session: NativeAppSession) -> None:
     """Toggles flat review on or off and discards the announcement."""
 
     keyboard.tap_key(keyboard.KEYSYM_KP_SUBTRACT)
-    session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+    session.reader.drain(quiescence_timeout=0.1, overall_timeout=2.0)
     session.reader.reset()
+
+
+@contextlib.contextmanager
+def bound_pan_keys(session: NativeAppSession) -> Iterator[tuple[str, str]]:
+    """Binds pan-left/right to two free Orca keys for the block, yielding (left, right) keysyms."""
+
+    (left_key, left_mods), (right_key, right_mods) = session.orca.available_keybindings(2)
+    session.orca.bind_command(PAN_LEFT_COMMAND, left_key, left_mods)
+    session.orca.bind_command(PAN_RIGHT_COMMAND, right_key, right_mods)
+    session.orca.refresh_keybindings()
+    try:
+        yield left_key, right_key
+    finally:
+        session.orca.unbind_command(PAN_LEFT_COMMAND)
+        session.orca.unbind_command(PAN_RIGHT_COMMAND)
+        session.orca.refresh_keybindings()
 
 
 def reset_web_state(session: NativeAppSession, *, web_app: bool = False) -> None:

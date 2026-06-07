@@ -55,6 +55,8 @@ class TestAXUtilitiesApplication:
         debug_mock.print_message = test_context.Mock()
         debug_mock.print_tokens = test_context.Mock()
         debug_mock.LEVEL_INFO = 800
+        debug_mock.LEVEL_SEVERE = 1000
+        debug_mock.debugLevel = debug_mock.LEVEL_SEVERE
 
         ax_object_class_mock = test_context.Mock()
         ax_object_class_mock.is_valid = test_context.Mock(side_effect=lambda obj: obj is not None)
@@ -439,34 +441,32 @@ class TestAXUtilitiesApplication:
             assert result is None
 
     @pytest.mark.parametrize(
-        "search_app_index,expected_found",
+        "parent_is_desktop,expected_found",
         [
-            (0, True),
-            (2, False),
+            (True, True),
+            (False, False),
         ],
     )
     def test_is_application_in_desktop(
         self,
         test_context: OrcaTestContext,
-        search_app_index: int,
+        parent_is_desktop: bool,
         expected_found: bool,
     ) -> None:
         """Test AXUtilitiesApplication.is_application_in_desktop with different scenarios."""
 
-        self._setup_dependencies(test_context)
+        essential_modules = self._setup_dependencies(test_context)
         from orca.ax_utilities_application import AXUtilitiesApplication
 
-        mock_app1 = test_context.Mock(spec=Atspi.Accessible)
-        mock_app2 = test_context.Mock(spec=Atspi.Accessible)
-        mock_app3 = test_context.Mock(spec=Atspi.Accessible)
-        test_apps = [mock_app1, mock_app2, mock_app3]
-        test_context.patch_object(
-            AXUtilitiesApplication,
-            "get_all_applications",
-            return_value=[mock_app1, mock_app2],
+        mock_desktop = test_context.Mock(spec=Atspi.Accessible)
+        mock_app = test_context.Mock(spec=Atspi.Accessible)
+        mock_other_parent = test_context.Mock(spec=Atspi.Accessible)
+        test_context.patch_object(AXUtilitiesApplication, "get_desktop", return_value=mock_desktop)
+        parent = mock_desktop if parent_is_desktop else mock_other_parent
+        essential_modules["orca.ax_object"].AXObject.get_parent = test_context.Mock(
+            return_value=parent
         )
-        search_app = test_apps[search_app_index]
-        result = AXUtilitiesApplication.is_application_in_desktop(search_app)
+        result = AXUtilitiesApplication.is_application_in_desktop(mock_app)
         assert result is expected_found
 
     @pytest.mark.parametrize(

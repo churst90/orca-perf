@@ -156,6 +156,8 @@ MODULE_CONFIG = {
             "GoPreviousLine",
             "GoStartOfLine",
             "LeftClickOnObject",
+            "MoveFocusToReview",
+            "MoveReviewToFocus",
             "PhoneticItem",
             "PhoneticLine",
             "PresentCharacter",
@@ -174,8 +176,8 @@ MODULE_CONFIG = {
             "UnicodeCurrentCharacter",
         ],
         "parameterized_commands": [],
-        "getters": ["IsRestricted"],
-        "setters": ["IsRestricted"],
+        "getters": ["DisplaysUpdates", "FocusTracking", "IsRestricted", "SpeaksUpdates"],
+        "setters": ["DisplaysUpdates", "FocusTracking", "IsRestricted", "SpeaksUpdates"],
         "ui_commands": [
             "ShowContents",
             "LeftClickOnObject",
@@ -999,6 +1001,20 @@ def to_variant(value: str | bool | float | list, signature: str | None = None) -
     return GLib.Variant("s", str(value))
 
 
+def _module_is_testing_only(bus, module_name: str) -> bool:
+    """Returns True if module_name exposes only gated *ForTesting members."""
+
+    iface = module_interface_xml(bus, module_name)
+    if iface is None:
+        return False
+    methods = [name for m in iface.findall("method") if (name := m.get("name"))]
+    return (
+        bool(methods)
+        and not iface.findall("property")
+        and all(name.endswith("ForTesting") for name in methods)
+    )
+
+
 @pytest.mark.dbus
 class TestOrcaDBusIntegration:
     """Integration tests for Orca D-Bus service using pytest features."""
@@ -1078,6 +1094,8 @@ class TestOrcaDBusIntegration:
         for cap_type in ["commands", "parameterized_commands", "getters", "setters"]:
             expected = set(config.get(cap_type, []))
             actual = set(result["result"].get(cap_type, []))
+            # Test-only commands (gated by ORCA_TEST_RPC_SECRET) are not part of the API surface.
+            actual = {name for name in actual if not name.endswith("ForTesting")}
             missing = expected - actual
             unexpected = actual - expected
 
@@ -1355,7 +1373,8 @@ class TestOrcaDBusIntegration:
 
         actual_modules = set(list_module_names(bus))
         expected_modules = set(MODULE_CONFIG.keys())
-        unexpected_modules = actual_modules - expected_modules - OPTIONAL_MODULES
+        candidates = actual_modules - expected_modules - OPTIONAL_MODULES
+        unexpected_modules = {m for m in candidates if not _module_is_testing_only(bus, m)}
 
         if unexpected_modules:
             module_list = sorted(unexpected_modules)

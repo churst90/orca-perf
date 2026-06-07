@@ -22,16 +22,34 @@
 
 from __future__ import annotations
 
+import contextlib
 import shutil
+import time
 from typing import TYPE_CHECKING
 
 import pytest
 
+from . import helpers
 from .harness import keyboard
-from .helpers import BrailleLine, capture, speech, toggle_flat_review
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from .orca_fixtures import NativeAppSession
+
+
+@contextlib.contextmanager
+def _bound(session: NativeAppSession, handler: str) -> Iterator[str]:
+    """Binds handler to a free key for the block, yielding the key to press."""
+
+    ((key, mods),) = session.orca.available_keybindings(1)
+    session.orca.bind_command(handler, key, mods)
+    session.orca.refresh_keybindings()
+    try:
+        yield key
+    finally:
+        session.orca.unbind_command(handler)
+        session.orca.refresh_keybindings()
 
 
 def _type(text: str) -> None:
@@ -53,6 +71,10 @@ def _settle(session: NativeAppSession) -> None:
     session.reader.reset()
 
 
+_WIDE_PROMPT_INPUT = "abcdefghij klmnopqrst uvwxy 01234567"
+_WIDE_PROMPT_LINE = "$ abcdefghij klmnopqrst uvwxy 01234567"
+
+
 @pytest.mark.native_app
 def test_command_output_is_spoken(gtk3_terminal_shell: NativeAppSession) -> None:
     """Tests that the output of a command is spoken when the command completes."""
@@ -61,9 +83,9 @@ def test_command_output_is_spoken(gtk3_terminal_shell: NativeAppSession) -> None
     _settle(session)
 
     _type("echo hi\n")
-    assert speech(session) == ["hi\n$ "]
+    assert helpers.speech(session) == ["hi\n$ "]
     _type("echo hello world\n")
-    assert speech(session) == ["hello world\n$ "]
+    assert helpers.speech(session) == ["hello world\n$ "]
 
 
 @pytest.mark.native_app
@@ -77,7 +99,7 @@ def test_multiline_command_output_is_spoken(gtk3_terminal_shell: NativeAppSessio
     _settle(session)
 
     _type("seq 3\n")
-    assert speech(session) == ["1\n2\n3\n$ "]
+    assert helpers.speech(session) == ["1\n2\n3\n$ "]
 
 
 @pytest.mark.native_app
@@ -92,15 +114,52 @@ def test_typed_characters_are_echoed(gtk3_terminal_shell: NativeAppSession) -> N
     _settle(session)
 
     _type("a")
-    assert capture(session) == (
+    assert helpers.capture(session) == (
         ["a"],
-        [BrailleLine(4, "$ a", "$ a", "\x00" * 3), BrailleLine(4, "$ a", "$ a", "\x00" * 3)],
+        [
+            helpers.BrailleLine(4, "$ a", "$ a", "\x00" * 3),
+            helpers.BrailleLine(4, "$ a", "$ a", "\x00" * 3),
+        ],
     )
     _type("b")
-    assert capture(session) == (
+    assert helpers.capture(session) == (
         ["b"],
-        [BrailleLine(5, "$ ab", "$ ab", "\x00" * 4), BrailleLine(5, "$ ab", "$ ab", "\x00" * 4)],
+        [
+            helpers.BrailleLine(5, "$ ab", "$ ab", "\x00" * 4),
+            helpers.BrailleLine(5, "$ ab", "$ ab", "\x00" * 4),
+        ],
     )
+
+
+@pytest.mark.native_app
+def test_backspace_and_delete_at_the_prompt(gtk3_terminal_shell: NativeAppSession) -> None:
+    """Tests Backspace and Delete at the bash prompt with key echo on."""
+
+    session = gtk3_terminal_shell
+    session.orca.set("TypingEchoPresenter", "KeyEchoEnabled", True)
+    session.orca.set("TypingEchoPresenter", "WordEchoEnabled", False)
+    session.orca.set("TypingEchoPresenter", "SentenceEchoEnabled", False)
+    session.orca.set("TypingEchoPresenter", "CharacterEchoEnabled", False)
+    _settle(session)
+
+    _type("abc")
+    session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+    session.reader.reset()
+
+    keyboard.tap_key(keyboard.KEYSYM_BACKSPACE)
+    assert helpers.capture(session) == (["c"], [helpers.BrailleLine(5, "$ ab", "$ ab", "\x00" * 4)])
+    keyboard.tap_key(keyboard.KEYSYM_BACKSPACE)
+    assert helpers.capture(session) == (["b"], [helpers.BrailleLine(4, "$ a", "$ a", "\x00" * 3)])
+
+    # Re-type and Left so Delete has something forward to act on.
+    _type("d")
+    session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+    session.reader.reset()
+    keyboard.tap_key(keyboard.KEYSYM_LEFT)
+    assert helpers.capture(session) == (["d"], [helpers.BrailleLine(4, "$ ad", "$ ad", "\x00" * 4)])
+
+    keyboard.tap_key(keyboard.KEYSYM_DELETE)
+    assert helpers.capture(session) == (["\n"], [helpers.BrailleLine(4, "$ a", "$ a", "\x00" * 3)])
 
 
 @pytest.mark.native_app
@@ -120,9 +179,9 @@ def test_key_echo_while_typing_in_vim(gtk3_terminal_vim: NativeAppSession) -> No
     session.reader.reset()
 
     _type("a")
-    assert speech(session) == ["a"]
+    assert helpers.speech(session) == ["a"]
     _type("b")
-    assert speech(session) == ["b"]
+    assert helpers.speech(session) == ["b"]
 
 
 @pytest.mark.native_app
@@ -138,30 +197,27 @@ def test_pager_navigation_speaks_each_page(gtk3_terminal_pager: NativeAppSession
     session.reader.drain(quiescence_timeout=0.5, overall_timeout=3.0)
     session.reader.reset()
 
-    # Less conveys the new page via its redraw, and Orca parks braille on the status line, so
-    # braille is the ":"/"(END)" indicator. Going backward Less repaints with a diff that can
-    # start mid-line ("07" rather than "line 07").
     keyboard.tap_key(keyboard.KEYSYM_PAGE_DOWN)
-    assert capture(session) == (
+    assert helpers.capture(session) == (
         ["line 15\nline 16\nline 17\nline 18\nline 19\nline 20\n(END)"],
-        [BrailleLine(6, "(END)", "(END)", "\x00" * 5)],
+        [helpers.BrailleLine(6, "(END)", "(END)", "\x00" * 5)],
     )
 
     keyboard.tap_key(keyboard.KEYSYM_PAGE_UP)
-    assert capture(session) == (
+    assert helpers.capture(session) == (
         ["07\nline 08\nline 09\nline 10\nline 11\nline 12\nline 13\n:"],
-        [BrailleLine(2, ":", ":", "\x00")],
+        [helpers.BrailleLine(2, ":", ":", "\x00")],
     )
 
 
-def _review_top_line(session: NativeAppSession) -> tuple[list[str], list[BrailleLine]]:
+def _review_top_line(session: NativeAppSession) -> tuple[list[str], list[helpers.BrailleLine]]:
     """Moves flat review to the top of the screen and returns the (speech, braille) for it."""
 
     session.orca.call("FlatReviewPresenter", "GoHome", True)
     session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
     session.reader.reset()
     session.orca.call("FlatReviewPresenter", "PresentLine", True)
-    return capture(session)
+    return helpers.capture(session)
 
 
 @pytest.mark.native_app
@@ -175,10 +231,10 @@ def test_flat_review_reflects_new_page(gtk3_terminal_pager: NativeAppSession) ->
     session.reader.drain(quiescence_timeout=0.5, overall_timeout=3.0)
     session.reader.reset()
 
-    toggle_flat_review(session)
+    helpers.toggle_flat_review(session)
     assert _review_top_line(session) == (
         ["line 14\n"],
-        [BrailleLine(1, "line 14 $l", "line 14 $l", "\x00" * 10)],
+        [helpers.BrailleLine(1, "line 14 $l", "line 14 $l", "\x00" * 10)],
     )
 
     keyboard.tap_key(keyboard.KEYSYM_PAGE_UP)
@@ -186,7 +242,7 @@ def test_flat_review_reflects_new_page(gtk3_terminal_pager: NativeAppSession) ->
     session.reader.reset()
     assert _review_top_line(session) == (
         ["line 07\n"],
-        [BrailleLine(1, "line 07 $l", "line 07 $l", "\x00" * 10)],
+        [helpers.BrailleLine(1, "line 07 $l", "line 07 $l", "\x00" * 10)],
     )
 
     keyboard.tap_key(keyboard.KEYSYM_PAGE_UP)
@@ -194,6 +250,175 @@ def test_flat_review_reflects_new_page(gtk3_terminal_pager: NativeAppSession) ->
     session.reader.reset()
     assert _review_top_line(session) == (
         ["line 01\n"],
-        [BrailleLine(1, "line 01 $l", "line 01 $l", "\x00" * 10)],
+        [helpers.BrailleLine(1, "line 01 $l", "line 01 $l", "\x00" * 10)],
     )
-    toggle_flat_review(session)
+    helpers.toggle_flat_review(session)
+
+
+@pytest.mark.native_app
+def test_pan_braille_across_terminal_line(gtk3_terminal_shell: NativeAppSession) -> None:
+    """Tests panning across a prompt line wider than the display, including the edge-walk."""
+
+    session = gtk3_terminal_shell
+    _settle(session)
+    _type(_WIDE_PROMPT_INPUT)
+    session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+    session.reader.reset()
+
+    with helpers.bound_pan_keys(session) as (left_key, right_key):
+        mask = "\x00" * len(_WIDE_PROMPT_LINE)
+        # Pan-left slides the window back to the start of the line.
+        session.orca.press_bound_key(left_key)
+        assert helpers.capture(session) == (
+            [],
+            [helpers.BrailleLine(0, _WIDE_PROMPT_LINE, "$ abcdefghij klmnopqrst uvwxy 01", mask)],
+        )
+        # Pan-right slides the window to the end of the line.
+        session.orca.press_bound_key(right_key)
+        assert helpers.capture(session) == (
+            [],
+            [helpers.BrailleLine(9, _WIDE_PROMPT_LINE, "01234567", mask)],
+        )
+
+
+@pytest.mark.native_app
+def test_pan_braille_left_crosses_wide_line_in_pager(
+    gtk3_terminal_wide_pager: NativeAppSession,
+) -> None:
+    """Tests that panning left over a pager line wider than the display reaches the line above."""
+
+    session = gtk3_terminal_wide_pager
+    _settle(session)
+    helpers.toggle_flat_review(session)
+
+    wide = "this line is wider than the display now $l"
+    wide_mask = "\x00" * len(wide)
+    with helpers.bound_pan_keys(session) as (left_key, _right_key):
+        session.orca.press_bound_key(left_key)
+        assert helpers.capture(session) == (
+            [],
+            [helpers.BrailleLine(7, "bottom $l", "bottom $l", "\x00" * 9)],
+        )
+        session.orca.press_bound_key(left_key)
+        assert helpers.capture(session) == (
+            [],
+            [helpers.BrailleLine(12, wide, "display now $l", wide_mask)],
+        )
+        # The start view is painted twice: by the pan, then by the flat-review zone-sync refresh.
+        session.orca.press_bound_key(left_key)
+        start_view = "this line is wider than the disp"
+        assert helpers.capture(session) == (
+            [],
+            [
+                helpers.BrailleLine(0, wide, start_view, wide_mask),
+                helpers.BrailleLine(0, wide, start_view, wide_mask),
+            ],
+        )
+        session.orca.press_bound_key(left_key)
+        assert helpers.capture(session) == (
+            [],
+            [helpers.BrailleLine(4, "top $l", "top $l", "\x00" * 6)],
+        )
+
+
+def _navigate_to_c1_line(session: NativeAppSession) -> None:
+    """Moves flat review to the c1/c2 output line and discards the output."""
+
+    session.orca.call("FlatReviewPresenter", "GoHome", True)
+    session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+    session.reader.reset()
+    session.orca.call("FlatReviewPresenter", "GoNextLine", True)
+    session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+    session.reader.reset()
+
+
+@pytest.mark.native_app
+def test_flat_review_speaks_live_update(gtk3_terminal_flatrev: NativeAppSession) -> None:
+    """Tests that a terminal line changing in place is spoken when SpeaksUpdates is on."""
+
+    session = gtk3_terminal_flatrev
+    _settle(session)
+
+    _type("bash t.sh")
+    keyboard.tap_key(keyboard.KEYSYM_RETURN)
+    time.sleep(0.5)
+
+    session.orca.set("FlatReviewPresenter", "SpeaksUpdates", True)
+    helpers.toggle_flat_review(session)
+    _navigate_to_c1_line(session)
+
+    keyboard.tap_key(keyboard.KEYSYM_KP_UP)
+    assert helpers.capture(session) == (
+        ["c1\n"],
+        [helpers.BrailleLine(1, "c1 $l", "c1 $l", "\x00" * 5)],
+    )
+
+    assert helpers.capture(session, wait_async=True, overall=5.0) == (
+        ["c2\n"],
+        [
+            helpers.BrailleLine(1, "c2 $l", "c2 $l", "\x00" * 5),
+            helpers.BrailleLine(1, "c2 $l", "c2 $l", "\x00" * 5),
+        ],
+    )
+
+    session.orca.set("FlatReviewPresenter", "SpeaksUpdates", False)
+    helpers.toggle_flat_review(session)
+
+
+@pytest.mark.native_app
+def test_flat_review_silent_live_update_when_disabled(
+    gtk3_terminal_flatrev: NativeAppSession,
+) -> None:
+    """Tests that a terminal line changing in place is not spoken when SpeaksUpdates is off."""
+
+    session = gtk3_terminal_flatrev
+    _settle(session)
+
+    _type("bash t.sh")
+    keyboard.tap_key(keyboard.KEYSYM_RETURN)
+    time.sleep(0.5)
+
+    helpers.toggle_flat_review(session)
+    _navigate_to_c1_line(session)
+
+    keyboard.tap_key(keyboard.KEYSYM_KP_UP)
+    assert helpers.capture(session) == (
+        ["c1\n"],
+        [helpers.BrailleLine(1, "c1 $l", "c1 $l", "\x00" * 5)],
+    )
+
+    assert helpers.capture(session, wait_async=True, overall=5.0) == (
+        [],
+        [
+            helpers.BrailleLine(1, "c2 $l", "c2 $l", "\x00" * 5),
+            helpers.BrailleLine(1, "c2 $l", "c2 $l", "\x00" * 5),
+        ],
+    )
+
+    helpers.toggle_flat_review(session)
+
+
+@pytest.mark.native_app
+def test_move_focus_to_review_location_unchanged(gtk3_terminal_shell: NativeAppSession) -> None:
+    """Tests that move-focus-to-review fails when the terminal won't let us set the caret."""
+
+    session = gtk3_terminal_shell
+    _settle(session)
+
+    _type("echo aaa bbb ccc\n")
+    session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+    session.reader.reset()
+
+    with _bound(session, "move_focus_to_review") as key:
+        helpers.toggle_flat_review(session)
+        session.orca.call("FlatReviewPresenter", "GoHome", True)
+        session.reader.drain(quiescence_timeout=0.3, overall_timeout=2.0)
+        session.reader.reset()
+        # VTE's GTK3 AtkText.set_caret_offset always returns FALSE, so we cannot set the caret.
+        # https://gitlab.gnome.org/GNOME/vte/-/work_items/2953
+        session.orca.press_bound_key(key)
+        assert helpers.capture(session) == (
+            ["Location unchanged"],
+            [helpers.BrailleLine(0, "Location unchanged", "Location unchanged", "\x00" * 18)],
+        )
+        helpers.toggle_flat_review(session)

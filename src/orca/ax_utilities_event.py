@@ -50,7 +50,7 @@ from .ax_utilities_object import AXUtilitiesObject
 from .ax_utilities_relation import AXUtilitiesRelation
 from .ax_utilities_role import AXUtilitiesRole
 from .ax_utilities_state import AXUtilitiesState
-from .ax_utilities_text import AXUtilitiesText
+from .ax_utilities_text import AXUtilitiesText, CaretSetReason
 from .ax_value import AXValue
 
 if TYPE_CHECKING:
@@ -70,6 +70,7 @@ class TextEventReason(enum.Enum):
     AUTO_SELECTION = enum.auto()
     AUTO_UNSELECTION = enum.auto()
     BACKSPACE = enum.auto()
+    BRAILLE_PANNING = enum.auto()
     CHILDREN_CHANGE = enum.auto()
     CUT = enum.auto()
     DELETE = enum.auto()
@@ -114,6 +115,9 @@ class TextEventReason(enum.Enum):
 
 class AXUtilitiesEvent:
     """Utilities for accessible events."""
+
+    # How recent a caret set must be for its resulting event to be attributed to it.
+    CARET_SET_EVENT_WINDOW_SECONDS = 1.0
 
     LAST_KNOWN_DESCRIPTION: ClassVar[dict[int, str]] = {}
     LAST_KNOWN_NAME: ClassVar[dict[int, str]] = {}
@@ -217,15 +221,20 @@ class AXUtilitiesEvent:
         if obj is None:
             return
 
+        state_set = AXObject.get_state_set(obj)
         AXUtilitiesEvent.LAST_KNOWN_DESCRIPTION[hash(obj)] = AXObject.get_description(obj)
         AXUtilitiesEvent.LAST_KNOWN_NAME[hash(obj)] = AXObject.get_name(obj)
-        AXUtilitiesEvent.LAST_KNOWN_CHECKED[hash(obj)] = AXUtilitiesState.is_checked(obj)
-        AXUtilitiesEvent.LAST_KNOWN_EXPANDED[hash(obj)] = AXUtilitiesState.is_expanded(obj)
-        AXUtilitiesEvent.LAST_KNOWN_INDETERMINATE[hash(obj)] = AXUtilitiesState.is_indeterminate(
-            obj,
+        AXUtilitiesEvent.LAST_KNOWN_CHECKED[hash(obj)] = AXUtilitiesState.is_checked(obj, state_set)
+        AXUtilitiesEvent.LAST_KNOWN_EXPANDED[hash(obj)] = AXUtilitiesState.is_expanded(
+            obj, state_set
         )
-        AXUtilitiesEvent.LAST_KNOWN_PRESSED[hash(obj)] = AXUtilitiesState.is_pressed(obj)
-        AXUtilitiesEvent.LAST_KNOWN_SELECTED[hash(obj)] = AXUtilitiesState.is_selected(obj)
+        AXUtilitiesEvent.LAST_KNOWN_INDETERMINATE[hash(obj)] = AXUtilitiesState.is_indeterminate(
+            obj, state_set
+        )
+        AXUtilitiesEvent.LAST_KNOWN_PRESSED[hash(obj)] = AXUtilitiesState.is_pressed(obj, state_set)
+        AXUtilitiesEvent.LAST_KNOWN_SELECTED[hash(obj)] = AXUtilitiesState.is_selected(
+            obj, state_set
+        )
 
         window = focus_manager.get_manager().get_active_window()
         AXUtilitiesEvent.LAST_KNOWN_NAME[hash(window)] = AXObject.get_name(window)
@@ -398,6 +407,17 @@ class AXUtilitiesEvent:
 
         mgr = input_event_manager.get_manager()
         obj = event.source
+        last_caret_set = AXUtilitiesText.get_last_caret_set()
+        # Some toolkits report the resulting event's offset as -1 rather than what we set.
+        if (
+            last_caret_set is not None
+            and last_caret_set.reason == CaretSetReason.BRAILLE_PANNING
+            and obj == last_caret_set.obj
+            and event.detail1 in (last_caret_set.offset, -1)
+            and time.time() - last_caret_set.time < AXUtilitiesEvent.CARET_SET_EVENT_WINDOW_SECONDS
+        ):
+            return TextEventReason.BRAILLE_PANNING
+
         mode, focus = focus_manager.get_manager().get_active_mode_and_object_of_interest()
         if mode == focus_manager.SAY_ALL:
             return TextEventReason.SAY_ALL
@@ -410,6 +430,10 @@ class AXUtilitiesEvent:
             line, _start, _end = AXText.get_line_at_offset(obj)
             if AXUtilitiesEvent._is_terminal_escape_sequence(line):
                 return TextEventReason.AUTO_INSERTION_UNPRESENTABLE
+        if (
+            mgr.last_event_was_up_or_down() or mgr.last_event_was_page_up_or_page_down()
+        ) and AXUtilitiesEvent._is_spin_button_descendant(obj):
+            return TextEventReason.SPIN_BUTTON_VALUE_CHANGE
         if mgr.last_event_was_caret_selection():
             return AXUtilitiesEvent._get_selection_navigation_reason(mgr)
         if mgr.last_event_was_caret_navigation():
@@ -997,15 +1021,14 @@ class AXUtilitiesEvent:
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return False
 
-        if AXUtilitiesState.manages_descendants(event.source):
+        source_states = AXObject.get_state_set(event.source)
+        if AXUtilitiesState.manages_descendants(event.source, source_states):
             msg = "AXUtilitiesEvent: Source manages descendants; handled elsewhere."
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return False
 
         if AXUtilitiesRole.is_menu(event.source):
-            if AXUtilitiesState.is_showing(event.source) and AXUtilitiesState.is_visible(
-                event.source
-            ):
+            if AXUtilitiesState.is_showing_and_visible(event.source, source_states):
                 msg = "AXUtilitiesEvent: Event is presentable: Source is a menu."
                 debug.print_message(debug.LEVEL_INFO, msg, True)
                 return True
@@ -1013,11 +1036,7 @@ class AXUtilitiesEvent:
             # This is a sad workaround for GTK2 menu items with submenus losing their showing state
             # when submenu children become selected.
             child = AXSelection.get_selected_child(event.source, 0)
-            if (
-                child is not None
-                and AXUtilitiesState.is_showing(child)
-                and AXUtilitiesState.is_visible(child)
-            ):
+            if child is not None and AXUtilitiesState.is_showing_and_visible(child):
                 tokens = [
                     "AXUtilitiesEvent: Event is presentable: Selected child",
                     child,
@@ -1031,7 +1050,7 @@ class AXUtilitiesEvent:
             return False
 
         if AXUtilitiesRole.is_combo_box(event.source) and not AXUtilitiesState.is_expanded(
-            event.source
+            event.source, source_states
         ):
             text_input = AXUtilitiesObject.find_descendant(
                 event.source, AXUtilitiesRole.is_text_input
@@ -1053,8 +1072,8 @@ class AXUtilitiesEvent:
                 msg = "AXUtilitiesEvent: Source is autocomplete for focused widget; not presenting."
                 debug.print_message(debug.LEVEL_INFO, msg, True)
                 return False
-        if event.source != focus and not (
-            AXUtilitiesState.is_showing(event.source) and AXUtilitiesState.is_visible(event.source)
+        if event.source != focus and not AXUtilitiesState.is_showing_and_visible(
+            event.source, source_states
         ):
             combobox = AXUtilitiesObject.find_ancestor(event.source, AXUtilitiesRole.is_combo_box)
             if combobox != focus and event.source != AXObject.get_parent(focus):
@@ -1102,15 +1121,17 @@ class AXUtilitiesEvent:
     def _is_presentable_text_event(event: Atspi.Event) -> bool:
         """Returns True if this text event should be presented."""
 
+        source_states = AXObject.get_state_set(event.source)
         if not (
-            AXUtilitiesState.is_editable(event.source) or AXUtilitiesRole.is_terminal(event.source)
+            AXUtilitiesState.is_editable(event.source, source_states)
+            or AXUtilitiesRole.is_terminal(event.source)
         ):
             msg = "AXUtilitiesEvent: The source is neither editable nor a terminal."
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return False
 
         focus = focus_manager.get_manager().get_locus_of_focus()
-        if focus != event.source and not AXUtilitiesState.is_focused(event.source):
+        if focus != event.source and not AXUtilitiesState.is_focused(event.source, source_states):
             msg = "AXUtilitiesEvent: The source is neither focused, nor the locus of focus"
             debug.print_message(debug.LEVEL_INFO, msg, True)
 

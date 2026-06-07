@@ -159,14 +159,15 @@ class AXUtilities:
         app = AXUtilitiesApplication.get_application(window)
         tokens = ["AXUtilities:", window, "from", app]
 
+        window_states = AXObject.get_state_set(window)
         can_be_active = True
-        if not AXUtilitiesState.is_active(window):
+        if not AXUtilitiesState.is_active(window, window_states):
             tokens.append("lacks active state")
             can_be_active = False
-        elif not AXUtilitiesState.is_showing(window):
+        elif not AXUtilitiesState.is_showing(window, window_states):
             tokens.append("lacks showing state")
             can_be_active = False
-        elif AXUtilitiesState.is_iconified(window):
+        elif AXUtilitiesState.is_iconified(window, window_states):
             tokens.append("is iconified")
             can_be_active = False
         elif AXUtilitiesApplication.is_mutter_x11_frames(app):
@@ -292,7 +293,7 @@ class AXUtilities:
             if AXObject.get_role(acc) not in roles:
                 return False
             if must_be_showing_and_visible:
-                return AXUtilitiesState.is_showing(acc) and AXUtilitiesState.is_visible(acc)
+                return AXUtilitiesState.is_showing_and_visible(acc)
             return True
 
         return AXUtilitiesObject.find_all_descendants(obj, is_match)
@@ -605,11 +606,12 @@ class AXUtilities:
     def _is_layout_only_table_row(obj: Atspi.Accessible) -> tuple[bool, str]:
         """Returns True with reason if this table row is layout-only."""
 
-        if AXUtilitiesState.is_focusable(obj):
+        state_set = AXObject.get_state_set(obj)
+        if AXUtilitiesState.is_focusable(obj, state_set):
             return False, "is focusable"
-        if AXUtilitiesState.is_selectable(obj):
+        if AXUtilitiesState.is_selectable(obj, state_set):
             return False, "is selectable"
-        if AXUtilitiesState.is_expandable(obj):
+        if AXUtilitiesState.is_expandable(obj, state_set):
             return False, "is expandable"
         if AXUtilities.has_explicit_name(obj):
             return False, "has explicit name"
@@ -1282,11 +1284,7 @@ class AXUtilities:
 
         labels = AXUtilitiesRelation.get_is_labelled_by(obj)
         for label in labels:
-            if (
-                AXUtilitiesRole.is_caption(label)
-                and AXUtilitiesState.is_showing(label)
-                and AXUtilitiesState.is_visible(label)
-            ):
+            if AXUtilitiesRole.is_caption(label) and AXUtilitiesState.is_showing_and_visible(label):
                 return True
 
         return False
@@ -1424,20 +1422,12 @@ class AXUtilities:
         tokens = ["AXUtilities: Checking if", obj, "is showing and visible...."]
         debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
-        if not (AXUtilitiesState.is_showing(obj) and AXUtilitiesState.is_visible(obj)):
+        if not AXUtilitiesState.is_showing_and_visible(obj):
             tokens = ["AXUtilities:", obj, "is not showing and visible. Treating as off screen."]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             return False
 
-        tokens = ["AXUtilities:", obj, "is showing and visible. Checking hidden..."]
-        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-
-        if AXUtilitiesState.is_hidden(obj):
-            tokens = ["AXUtilities:", obj, "is reports being hidden. Treating as off screen."]
-            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            return False
-
-        tokens = ["AXUtilities:", obj, "is not hidden. Checking size and rect..."]
+        tokens = ["AXUtilities:", obj, "is showing and visible. Checking size and rect..."]
         debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
         if AXUtilitiesComponent.has_no_size_or_invalid_rect(obj):

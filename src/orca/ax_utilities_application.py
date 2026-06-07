@@ -154,7 +154,7 @@ class AXUtilitiesApplication:
             AXObject.handle_error(app, error, msg)
             return ""
 
-        return name
+        return name or ""
 
     @staticmethod
     def get_application_toolkit_version(obj: Atspi.Accessible) -> str:
@@ -171,7 +171,7 @@ class AXUtilitiesApplication:
             AXObject.handle_error(app, error, msg)
             return ""
 
-        return version
+        return version or ""
 
     @staticmethod
     def get_application_with_pid(pid: int) -> Atspi.Accessible | None:
@@ -233,13 +233,27 @@ class AXUtilitiesApplication:
     def is_application_in_desktop(app: Atspi.Accessible) -> bool:
         """Returns true if app is known to Atspi"""
 
-        applications = AXUtilitiesApplication.get_all_applications()
-        for child in applications:
-            if child == app:
+        desktop = AXUtilitiesApplication.get_desktop()
+        parent = AXObject.get_parent(app)
+        if desktop is not None and parent == desktop:
+            return True
+
+        tokens = ["WARNING:", app, "with parent", parent, "is not in the accessible desktop."]
+        if debug.debugLevel <= debug.LEVEL_INFO:
+            tokens.append(AXUtilitiesApplication.application_as_string(app))
+        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+
+        # Qt 5 and GTK 4 apps can fail to report their parent even though the desktop lists them
+        # among its children, so for them fall back to the slower scan of the desktop's children.
+        if parent is None:
+            toolkit = AXUtilitiesApplication.get_application_toolkit_name(app).lower()
+            major = AXUtilitiesApplication.get_application_toolkit_version(app).split(".")[0]
+            if (toolkit, major) in (
+                ("qt", "5"),
+                ("gtk", "4"),
+            ) and app in AXUtilitiesApplication.get_all_applications():
                 return True
 
-        tokens = ["WARNING:", app, "is not in the accessible desktop"]
-        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
         return False
 
     @staticmethod

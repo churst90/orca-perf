@@ -86,7 +86,7 @@ from orca.ax_selection import AXSelection
 from orca.ax_text import AXText
 from orca.ax_utilities import AXUtilities
 from orca.ax_utilities_event import TextEventReason
-from orca.ax_utilities_text import TextUnit
+from orca.ax_utilities_text import CaretSetReason, TextUnit
 from orca.command import BrailleCommand, KeyboardCommand
 from orca.generator import PresentationReason
 
@@ -585,7 +585,9 @@ class Script(script.Script):
         start_offset = AXText.get_line_at_offset(focus)[1]
         moved_caret = False
         if start_offset > 0:
-            moved_caret = AXText.set_caret_offset(focus, start_offset - 1)
+            moved_caret = AXUtilities.set_caret_offset_with_reason(
+                focus, start_offset - 1, CaretSetReason.BRAILLE_PANNING
+            )
 
         # If we didn't move the caret and we're in a terminal, we
         # jump into flat review to review the text.  See
@@ -637,7 +639,9 @@ class Script(script.Script):
 
         end_offset = AXText.get_line_at_offset(focus)[2]
         if end_offset < AXText.get_character_count(focus):
-            AXText.set_caret_offset(focus, end_offset)
+            AXUtilities.set_caret_offset_with_reason(
+                focus, end_offset, CaretSetReason.BRAILLE_PANNING
+            )
 
         return True
 
@@ -698,7 +702,9 @@ class Script(script.Script):
 
         presentation_manager.get_manager().interrupt_presentation()
         AXUtilities.clear_all_selected_text(caret_context.accessible)
-        self.utilities.set_caret_offset(caret_context.accessible, caret_context.offset)
+        self.utilities.set_caret_offset(
+            caret_context.accessible, caret_context.offset, reason=CaretSetReason.BRAILLE_CUT
+        )
         return True
 
     def process_braille_cut_line(
@@ -934,10 +940,16 @@ class Script(script.Script):
         manager.set_last_cursor_position(event.source, offset)
         self.utilities.set_caret_context(event.source, offset)
 
+        # The text-changed and text-selection-changed handlers already refreshed braille
+        # and presented speech for these reasons. Letting caret-moved also run would
+        # re-emit the same braille line a second time for the same logical operation.
         ignore = [
+            TextEventReason.BACKSPACE,
             TextEventReason.CUT,
+            TextEventReason.DELETE,
             TextEventReason.PASTE,
             TextEventReason.REDO,
+            TextEventReason.SPIN_BUTTON_VALUE_CHANGE,
             TextEventReason.UNDO,
         ]
         if reason in ignore:
@@ -1217,6 +1229,11 @@ class Script(script.Script):
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return True
 
+        if reason == TextEventReason.SPIN_BUTTON_VALUE_CHANGE:
+            msg = "DEFAULT: Ignoring deletion; spin button value is presented via value-changed"
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+            return True
+
         presentation_manager.get_manager().present_command_announcement()
         self.update_braille(event.source)
 
@@ -1257,6 +1274,11 @@ class Script(script.Script):
         reason = AXUtilities.get_text_event_reason(event)
         if reason == TextEventReason.AUTO_INSERTION_UNPRESENTABLE:
             msg = "DEFAULT: Ignoring event believed to be irrelevant auto insertion"
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+            return True
+
+        if reason == TextEventReason.SPIN_BUTTON_VALUE_CHANGE:
+            msg = "DEFAULT: Ignoring insertion; spin button value is presented via value-changed"
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return True
 
@@ -1335,6 +1357,11 @@ class Script(script.Script):
         reason = AXUtilities.get_text_event_reason(event)
         if reason == TextEventReason.UNKNOWN:
             msg = "DEFAULT: Ignoring event because reason for change is unknown"
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+            AXUtilities.update_cached_selected_text(event.source)
+            return True
+        if reason == TextEventReason.SPIN_BUTTON_VALUE_CHANGE:
+            msg = "DEFAULT: Ignoring selection; spin button value is presented via value-changed"
             debug.print_message(debug.LEVEL_INFO, msg, True)
             AXUtilities.update_cached_selected_text(event.source)
             return True
@@ -1478,7 +1505,9 @@ class Script(script.Script):
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return True
 
-        if AXUtilities.is_combo_box_popup(AXUtilities.find_active_window()):
+        if AXUtilities.is_combo_box(focus) and AXUtilities.is_combo_box_popup(
+            AXUtilities.find_active_window()
+        ):
             msg = "DEFAULT: Ignoring event. Combo box popup is the new active window."
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return True
@@ -1586,7 +1615,7 @@ class Script(script.Script):
         if offset is None:
             offset = AXText.get_caret_offset(obj)
         else:
-            AXText.set_caret_offset(obj, offset)
+            AXUtilities.set_caret_offset_with_reason(obj, offset, CaretSetReason.LINE_PRESENTATION)
 
         line, start_offset = AXText.get_line_at_offset(obj, offset)[0:2]
         if line and line != "\n":
@@ -1686,7 +1715,9 @@ class Script(script.Script):
         debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
         if offset is not None:
-            AXText.set_caret_offset(obj, offset)
+            AXUtilities.set_caret_offset_with_reason(
+                obj, offset, CaretSetReason.OBJECT_PRESENTATION
+            )
 
         presentation_manager.get_manager().present_object(
             self,

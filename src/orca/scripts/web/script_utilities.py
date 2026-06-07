@@ -61,6 +61,8 @@ from orca.ax_utilities import AXUtilities
 from orca.ax_utilities_debugging import AXUtilitiesDebugging
 
 if TYPE_CHECKING:
+    from orca.ax_utilities_text import CaretSetReason
+
     from .script import Script
 
 
@@ -73,6 +75,8 @@ class Utilities(script_utilities.Utilities):
         self._cached_prior_contexts: dict[int, tuple[Atspi.Accessible, int]] = {}
         self._cached_can_have_caret_context_decision: dict[int, bool] = {}
         self._cached_in_document_content: dict[int, bool] = {}
+        self._cached_is_document: dict[int, bool] = {}
+        self._cached_is_top_level_document: dict[int, bool] = {}
         self._cached_document_for_object: dict[int, Atspi.Accessible | None] = {}
         self._cached_top_level_document_for_object: dict[int, Atspi.Accessible | None] = {}
         self._cached_is_content_editable_with_embedded_objects: dict[int, bool] = {}
@@ -177,6 +181,8 @@ class Utilities(script_utilities.Utilities):
 
         debug.print_message(debug.LEVEL_INFO, "WEB: cleaning up cached objects", True)
         self._cached_in_document_content = {}
+        self._cached_is_document = {}
+        self._cached_is_top_level_document = {}
         self._cached_document_for_object = {}
         self._cached_top_level_document_for_object = {}
         self._cached_is_content_editable_with_embedded_objects = {}
@@ -397,28 +403,27 @@ class Utilities(script_utilities.Utilities):
 
         return ordered, index, capped
 
-    def is_document(self, obj: Atspi.Accessible, exclude_document_frame: bool = True) -> bool:
+    def is_document(self, obj: Atspi.Accessible) -> bool:
         """Returns True if obj is a document."""
 
+        if (rv := self._cached_is_document.get(hash(obj))) is not None:
+            return rv
+
         role = AXObject.get_role(obj)
-        if AXUtilities.is_document_web(obj, role) or AXUtilities.is_embedded(obj, role):
-            return True
-
-        if not exclude_document_frame:
-            return AXUtilities.is_document_frame(obj, role)
-
-        return False
+        rv = AXUtilities.is_document_web(obj, role) or AXUtilities.is_embedded(obj, role)
+        self._cached_is_document[hash(obj)] = rv
+        return rv
 
     def in_document_content(self, obj: Atspi.Accessible | None = None) -> bool:
         if not obj:
             obj = focus_manager.get_manager().get_locus_of_focus()
 
-        if self.is_document(obj):
-            return True
-
         rv = self._cached_in_document_content.get(hash(obj))
         if rv is not None:
             return rv
+
+        if self.is_document(obj):
+            return True
 
         document = self.get_document_for_object(obj)
         rv = document is not None
@@ -438,6 +443,17 @@ class Utilities(script_utilities.Utilities):
 
         rv = super().get_document_for_object(obj)
         self._cached_document_for_object[obj_hash] = rv
+        return rv
+
+    def is_top_level_document(self, obj: Atspi.Accessible) -> bool:
+        """Returns true if obj is a top-level document."""
+
+        obj_hash = hash(obj)
+        if (rv := self._cached_is_top_level_document.get(obj_hash)) is not None:
+            return rv
+
+        rv = super().is_top_level_document(obj)
+        self._cached_is_top_level_document[obj_hash] = rv
         return rv
 
     def get_top_level_document_for_object(
@@ -478,6 +494,8 @@ class Utilities(script_utilities.Utilities):
         obj: Atspi.Accessible,
         offset: int,
         document: Atspi.Accessible | None = None,
+        *,
+        reason: CaretSetReason,
     ) -> None:
         grab_focus = self.grab_focus_when_setting_caret(obj)
 
@@ -490,7 +508,7 @@ class Utilities(script_utilities.Utilities):
         if grab_focus:
             AXObject.grab_focus(obj)
 
-        AXText.set_caret_offset(obj, offset)
+        AXUtilities.set_caret_offset_with_reason(obj, offset, reason)
 
         # If we return earlier than here, braille cursor routing fails in sticky focus mode.
         presenter = document_presenter.get_presenter()
@@ -499,10 +517,6 @@ class Utilities(script_utilities.Utilities):
 
         if presenter.use_focus_mode(obj, old_focus) != presenter.in_focus_mode(self._script.app):
             presenter.toggle_presentation_mode(self._script)
-
-        # TODO - JD: Can we remove this?
-        if obj:
-            AXObject.clear_cache(obj, False, "Set caret in object.")
 
     def in_find_container(self, obj: Atspi.Accessible | None = None) -> bool:
         """Returns True if obj is in a find-in-page container."""
@@ -556,12 +570,14 @@ class Utilities(script_utilities.Utilities):
         AXObject.clear_cache(match, False, "Ensuring we have correct name for find results.")
         return AXObject.get_name(match)
 
-    def set_caret_offset(self, obj: Atspi.Accessible, offset: int) -> None:
+    def set_caret_offset(
+        self, obj: Atspi.Accessible, offset: int, *, reason: CaretSetReason
+    ) -> None:
         """Sets the caret offset via AtspiText."""
 
         # TODO - JD: Audit callers and see if this can be merged into the default logic.
 
-        self.set_caret_position(obj, offset)
+        self.set_caret_position(obj, offset, reason=reason)
         self._script.update_braille(obj)
 
     def next_context(
@@ -814,8 +830,8 @@ class Utilities(script_utilities.Utilities):
                 tokens = ["WEB: Treating", obj, "as non-text due to role."]
                 debug.print_tokens(debug.LEVEL_INFO, tokens, True)
                 rv = False
-            if rv and (AXUtilities.is_hidden(obj) or self._is_off_screen_label(obj)):
-                tokens = ["WEB: Treating", obj, "as non-text: is hidden or off-screen label."]
+            if rv and self._is_off_screen_label(obj):
+                tokens = ["WEB: Treating", obj, "as non-text: is off-screen label."]
                 debug.print_tokens(debug.LEVEL_INFO, tokens, True)
                 rv = False
             if rv and self._is_non_navigable_embedded_document(obj):
@@ -1634,16 +1650,27 @@ class Utilities(script_utilities.Utilities):
                     if abs(rect.x - x_rect.x) <= 1 and abs(rect.y - x_rect.y) <= 1:
                         # This happens with dynamic skip links such as found on Wikipedia.
                         return False
-                elif (
-                    AXUtilities.is_block_list_descendant(obj)
-                    != AXUtilities.is_block_list_descendant(x_obj)
-                    or AXUtilities.is_code_block_descendant(obj, inclusive=True)
-                    != AXUtilities.is_code_block_descendant(x_obj, inclusive=True)
-                    or (AXUtilities.is_tree_related(obj) and AXUtilities.is_tree_related(x_obj))
-                    or (AXUtilities.is_heading(obj) and AXUtilities.has_no_size(obj))
-                    or (AXUtilities.is_heading(x_obj) and AXUtilities.has_no_size(x_obj))
-                ):
-                    return False
+                else:
+                    reason = None
+                    if AXUtilities.is_block_list_descendant(
+                        obj
+                    ) != AXUtilities.is_block_list_descendant(x_obj):
+                        reason = "block list descendant mismatch"
+                    elif AXUtilities.is_code_block_descendant(
+                        obj, inclusive=True
+                    ) != AXUtilities.is_code_block_descendant(x_obj, inclusive=True):
+                        reason = "code block descendant mismatch"
+                    elif AXUtilities.is_tree_related(obj) and AXUtilities.is_tree_related(x_obj):
+                        reason = "both tree related"
+                    elif AXUtilities.is_heading(obj) and AXUtilities.has_no_size(obj):
+                        reason = "obj is sizeless heading"
+                    elif AXUtilities.is_heading(x_obj) and AXUtilities.has_no_size(x_obj):
+                        reason = "x_obj is sizeless heading"
+
+                    if reason:
+                        tokens = ["WEB: Excluding", x_obj, "from line contents:", reason]
+                        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+                        return False
 
             if AXUtilities.is_math(x_obj):
                 on_same_line = AXUtilities.rects_are_on_same_line(rect, x_rect, rect.height)
@@ -2095,19 +2122,25 @@ class Utilities(script_utilities.Utilities):
             text = string or AXObject.get_name(obj)
             rv = True
             # TODO - JD: Audit this to see if they are now redundant.
-            if (
-                ((self.is_text_block_element(obj) or self.is_link(obj)) and not text)
-                or (self.is_content_editable_with_embedded_objects(obj) and not string.strip())
-                or self._is_empty_anchor(obj)
-                or (AXUtilities.has_no_size(obj) and not text)
-                or AXUtilities.is_hidden(obj)
-                or self._is_off_screen_label(obj)
-                or self._is_useless_image(obj)
-                or self.is_link_ancestor_of_image_in_contents(obj, contents)
-                or self.is_error_for_contents(obj, contents)
-                or self._is_labelling_contents(obj, contents)
-            ):
-                rv = False
+            reason = None
+            if (self.is_text_block_element(obj) or self.is_link(obj)) and not text:
+                reason = "empty text block or link"
+            elif self.is_content_editable_with_embedded_objects(obj) and not string.strip():
+                reason = "empty editable host"
+            elif self._is_empty_anchor(obj):
+                reason = "empty anchor"
+            elif AXUtilities.has_no_size(obj) and not text:
+                reason = "sizeless and nameless"
+            elif self._is_off_screen_label(obj):
+                reason = "off-screen label"
+            elif self._is_useless_image(obj):
+                reason = "useless image"
+            elif self.is_link_ancestor_of_image_in_contents(obj, contents):
+                reason = "link ancestor of image in contents"
+            elif self.is_error_for_contents(obj, contents):
+                reason = "error for contents"
+            elif self._is_labelling_contents(obj, contents):
+                reason = "labels other contents"
             elif AXUtilities.is_table_row(obj):
                 rv = AXUtilities.has_explicit_name(obj)
             else:
@@ -2115,6 +2148,11 @@ class Utilities(script_utilities.Utilities):
                 always_filter = [Atspi.Role.RADIO_BUTTON, Atspi.Role.CHECK_BOX]
                 if widget and (infer_labels or AXObject.get_role(widget) in always_filter):
                     rv = False
+
+            if reason:
+                tokens = ["WEB: Excluding", obj, "from presentation:", reason]
+                debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+                rv = False
 
             self._cached_should_filter[hash(obj)] = rv
             return rv
@@ -2225,9 +2263,6 @@ class Utilities(script_utilities.Utilities):
             self._cached_element_lines_are_single_words[obj_hash] = False
             self._cached_element_lines_are_single_chars[obj_hash] = False
             return
-
-        # TODO - JD: Can we remove this?
-        AXObject.clear_cache(obj, False, "Checking if element lines are single words/chars.")
 
         # Check for single-char lines.
         is_single_chars = True
@@ -2378,9 +2413,6 @@ class Utilities(script_utilities.Utilities):
 
     def _is_empty_anchor(self, obj: Atspi.Accessible) -> bool:
         return AXUtilities.is_anchor(obj) and not self.treat_as_text_object(obj)
-
-    def _is_empty_tool_tip(self, obj: Atspi.Accessible) -> bool:
-        return AXUtilities.is_tool_tip(obj) and not self.treat_as_text_object(obj)
 
     def is_browser_ui_alert(self, obj: Atspi.Accessible) -> bool:
         """Returns true if obj is an alert outside of document content."""
@@ -2612,20 +2644,25 @@ class Utilities(script_utilities.Utilities):
 
         roles = [Atspi.Role.PARAGRAPH, Atspi.Role.SECTION, Atspi.Role.STATIC, Atspi.Role.TABLE_ROW]
         role = AXObject.get_role(obj)
-        if (
-            (role not in roles and not AXUtilities.is_aria_alert(obj))
-            or AXUtilities.is_focusable(obj)
-            or AXUtilities.is_editable(obj)
-            or (
-                self.has_valid_name(obj)
-                or AXObject.get_description(obj)
-                or AXObject.get_child_count(obj)
-            )
-            or (
-                AXText.get_character_count(obj)
-                and AXText.get_all_text(obj) != AXObject.get_name(obj)
-            )
-        ):
+        reason = None
+        if role not in roles and not AXUtilities.is_aria_alert(obj):
+            reason = "ineligible role"
+        elif AXUtilities.is_focusable(obj):
+            reason = "focusable"
+        elif AXUtilities.is_editable(obj):
+            reason = "editable"
+        elif self.has_valid_name(obj):
+            reason = "has valid name"
+        elif AXObject.get_description(obj):
+            reason = "has description"
+        elif AXObject.get_child_count(obj):
+            reason = "has children"
+        elif AXText.get_character_count(obj) and AXText.get_all_text(obj) != AXObject.get_name(obj):
+            reason = "has text content"
+
+        if reason:
+            tokens = ["WEB:", obj, "is not a useless empty element:", reason]
+            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             rv = False
         elif AXObject.supports_action(obj):
             names = AXUtilities.get_action_names(obj)
@@ -3065,23 +3102,12 @@ class Utilities(script_utilities.Utilities):
             tokens = ["WEB: Empty anchor cannot have caret context", obj]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             rv = False
-        elif self._is_empty_tool_tip(obj):
-            tokens = ["WEB: Empty tool tip cannot have caret context", obj]
-            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            rv = False
         elif self._is_fake_placeholder_for_entry(obj):
             tokens = ["WEB: Fake placeholder for entry cannot have caret context", obj]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             rv = False
         elif AXUtilities.is_presentational_child(obj):
             tokens = ["WEB: Presentational child cannot have caret context", obj]
-            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            rv = False
-        elif AXUtilities.is_hidden(obj):
-            # We try to do this check only if needed because getting object attributes is
-            # not as performant, and we cannot use the cached attribute because aria-hidden
-            # can change frequently depending on the app.
-            tokens = ["WEB: Hidden object cannot have caret context", obj]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             rv = False
         elif AXUtilities.has_no_size(obj):
@@ -3120,7 +3146,7 @@ class Utilities(script_utilities.Utilities):
                 else:
                     break
 
-        if context_obj and not AXUtilities.is_hidden(context_obj):
+        if context_obj:
             return self.find_next_caret_in_order(context_obj, max(-1, context_offset - 1))
 
         if self.is_document(container):
@@ -3197,37 +3223,6 @@ class Utilities(script_utilities.Utilities):
         self._cached_prior_contexts.pop(hash(parent), None)
         self._caret_order_invalidate(document)
 
-    def _handle_event_for_removed_selectable_child(self, event):
-        container = None
-        if AXUtilities.is_list_box(event.source) or AXUtilities.is_tree(event.source):
-            container = event.source
-        else:
-            container = AXUtilities.find_ancestor(
-                event.source,
-                AXUtilities.is_list_box,
-            ) or AXUtilities.find_ancestor(event.source, AXUtilities.is_tree)
-        if container is None:
-            msg = "WEB: Could not find listbox or tree to recover from removed child."
-            debug.print_message(debug.LEVEL_INFO, msg, True)
-            return False
-
-        tokens = ["WEB: Checking", container, "for focused child."]
-        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-
-        # TODO - JD: Can we remove this? If it's needed, should it be recursive?
-        AXObject.clear_cache(container, False, "Handling event for removed selectable child.")
-        item = AXUtilities.get_focused_object(container)
-        if not (AXUtilities.is_list_item(item) or AXUtilities.is_tree_item):
-            msg = "WEB: Could not find focused item to recover from removed child."
-            debug.print_message(debug.LEVEL_INFO, msg, True)
-            return False
-
-        tokens = ["WEB: Recovered from removed child. New focus is: ", item, "0"]
-        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-        focus_manager.get_manager().set_locus_of_focus(event, item)
-        self.set_caret_context(item, 0)
-        return True
-
     def handle_event_for_removed_child(self, event):
         """Attempts to recover when the current object has been removed from the document."""
 
@@ -3247,9 +3242,6 @@ class Utilities(script_utilities.Utilities):
             msg = "WEB: Event detail1 is useless."
             debug.print_message(debug.LEVEL_INFO, msg, True)
             return False
-
-        if self._handle_event_for_removed_selectable_child(event):
-            return True
 
         obj, offset = None, -1
         notify = True

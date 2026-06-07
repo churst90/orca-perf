@@ -26,6 +26,8 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
+os.environ["GSETTINGS_BACKEND"] = "memory"
+
 from .dbus_fixtures import (  # noqa: F401
     _bus,
     _dbus_service_proxy,
@@ -39,19 +41,32 @@ from .gsettings_fixtures import (  # noqa: F401
     _gsettings_registry,
 )
 from .orca_fixtures import (  # noqa: F401
+    _gtk3_terminal_flatrev,
     _gtk3_terminal_pager,
     _gtk3_terminal_shell,
     _gtk3_terminal_vim,
+    _gtk3_terminal_wide_pager,
     _gtk3_text_view,
     _gtk3_toolbar,
     _gtk3_tree_view,
+    _gtk3_two_entries,
+    _gtk3_two_windows,
     _gtk3_widget_notebook,
     _orca,
+    _web_alert,
+    _web_aria_spinbutton,
+    _web_attribute_mask,
+    _web_autocomplete,
     _web_basic,
+    _web_caret_context,
+    _web_contracted_braille,
     _web_dialogs,
+    _web_dynamic_content,
+    _web_editing,
     _web_field_states,
     _web_form_fields,
     _web_headings,
+    _web_image_link,
     _web_inline_landmarks,
     _web_inline_list,
     _web_label_inference,
@@ -59,12 +74,20 @@ from .orca_fixtures import (  # noqa: F401
     _web_languages,
     _web_lists,
     _web_live_regions,
+    _web_long_line,
     _web_nested_headings,
+    _web_offscreen_labels,
+    _web_option_removal,
+    _web_page_up_down,
+    _web_plain_text,
+    _web_redundant_content,
     _web_sliders,
+    _web_sortable_table,
     _web_structural_navigation,
     _web_tables,
     _web_text_attributes,
     _web_tree,
+    _web_useless_images,
     _web_wrapping_text,
 )
 

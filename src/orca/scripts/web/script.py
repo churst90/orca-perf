@@ -58,7 +58,7 @@ from orca.ax_object import AXObject
 from orca.ax_text import AXText
 from orca.ax_utilities import AXUtilities
 from orca.ax_utilities_event import TextEventReason
-from orca.ax_utilities_text import TextUnit
+from orca.ax_utilities_text import CaretSetReason, TextUnit
 from orca.scripts import default
 from orca.structural_navigator import NavigationMode
 
@@ -220,7 +220,9 @@ class Script(default.Script):
             and contents[0]
             and not document_presenter.get_presenter().in_focus_mode(self.app)
         ):
-            self.utilities.set_caret_position(contents[0][0], contents[0][1])
+            self.utilities.set_caret_position(
+                contents[0][0], contents[0][1], reason=CaretSetReason.LINE_PRESENTATION
+            )
 
         line, start_offset = AXText.get_line_at_offset(obj, offset)[0:2]
         speech_presenter.get_presenter().speak_line(
@@ -270,7 +272,7 @@ class Script(default.Script):
 
         if AXUtilities.is_status_bar(obj) or AXUtilities.is_alert(obj):
             if not document_presenter.get_presenter().in_focus_mode(self.app):
-                self.utilities.set_caret_position(obj, 0)
+                self.utilities.set_caret_position(obj, 0, reason=CaretSetReason.OBJECT_PRESENTATION)
             super().present_object(
                 obj,
                 offset=offset,
@@ -281,12 +283,19 @@ class Script(default.Script):
             )
             return
 
-        if (
-            caret_navigator.get_navigator().last_input_event_was_navigation_command()
-            or structural_navigator.get_navigator().last_input_event_was_navigation_command()
-            or table_navigator.get_navigator().last_input_event_was_navigation_command()
-            or AXUtilities.get_table(obj)
-        ):
+        prior_reason = None
+        if caret_navigator.get_navigator().last_input_event_was_navigation_command():
+            prior_reason = "caret navigation command"
+        elif structural_navigator.get_navigator().last_input_event_was_navigation_command():
+            prior_reason = "structural navigation command"
+        elif table_navigator.get_navigator().last_input_event_was_navigation_command():
+            prior_reason = "table navigation command"
+        elif AXUtilities.get_table(obj):
+            prior_reason = "object in table"
+
+        if prior_reason:
+            tokens = ["WEB: Using prior context for presentation:", prior_reason]
+            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             prior_context = self.utilities.get_prior_context()
             if prior_context is not None:
                 prior_obj, _prior_offset = prior_context
@@ -301,7 +310,7 @@ class Script(default.Script):
         # Editors like VSCode use the entry role for the code editor.
         if AXUtilities.is_entry(obj):
             if not document_presenter.get_presenter().in_focus_mode(self.app):
-                self.utilities.set_caret_position(obj, 0)
+                self.utilities.set_caret_position(obj, 0, reason=CaretSetReason.OBJECT_PRESENTATION)
             super().present_object(
                 obj,
                 offset=offset,
@@ -327,7 +336,9 @@ class Script(default.Script):
             and contents[0]
             and not document_presenter.get_presenter().in_focus_mode(self.app)
         ):
-            self.utilities.set_caret_position(contents[0][0], contents[0][1])
+            self.utilities.set_caret_position(
+                contents[0][0], contents[0][1], reason=CaretSetReason.OBJECT_PRESENTATION
+            )
         presenter = presentation_manager.get_manager()
         if generate_braille:
             presenter.display_contents(contents)
@@ -377,18 +388,28 @@ class Script(default.Script):
 
         is_content_editable = self.utilities.is_content_editable_with_embedded_objects(obj)
 
-        if (
-            not caret_navigator.get_navigator().last_input_event_was_navigation_command()
-            and not structural_navigator.get_navigator().last_input_event_was_navigation_command()
-            and not table_navigator.get_navigator().last_input_event_was_navigation_command()
-            and not is_content_editable
-            and not AXDocument.is_plain_text(document)
-            and not input_event_manager.get_manager().last_event_was_caret_selection()
-        ):
+        handled_reason = None
+        if caret_navigator.get_navigator().last_input_event_was_navigation_command():
+            handled_reason = "caret navigation command"
+        elif structural_navigator.get_navigator().last_input_event_was_navigation_command():
+            handled_reason = "structural navigation command"
+        elif table_navigator.get_navigator().last_input_event_was_navigation_command():
+            handled_reason = "table navigation command"
+        elif is_content_editable:
+            handled_reason = "content editable"
+        elif AXDocument.is_plain_text(document):
+            handled_reason = "plain text document"
+        elif input_event_manager.get_manager().last_event_was_caret_selection():
+            handled_reason = "caret selection"
+
+        if not handled_reason:
             tokens = ["WEB: updating braille for unhandled navigation type", obj]
             debug.print_tokens(debug.LEVEL_INFO, tokens, True)
             super().update_braille(obj, offset=offset)
             return
+
+        tokens = ["WEB: updating braille via line contents:", handled_reason, obj]
+        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
 
         # TODO - JD: Getting the caret context can, by side effect, update it. This in turn
         # can prevent us from presenting table column headers when braille is enabled because
@@ -421,8 +442,8 @@ class Script(default.Script):
             return False
 
         obj, start, _end, _string = contents[0]
-        self.utilities.set_caret_position(obj, start)
-        self.update_braille(obj)
+        self.utilities.set_caret_position(obj, start, reason=CaretSetReason.BRAILLE_PANNING)
+        self.update_braille(obj, offset=start)
         presenter.pan_to_end()
         return True
 
@@ -445,8 +466,8 @@ class Script(default.Script):
             return False
 
         obj, start, _end, _string = contents[0]
-        self.utilities.set_caret_position(obj, start)
-        self.update_braille(obj)
+        self.utilities.set_caret_position(obj, start, reason=CaretSetReason.BRAILLE_PANNING)
+        self.update_braille(obj, offset=start)
         presenter.pan_to_beginning()
         return True
 
@@ -813,6 +834,11 @@ class Script(default.Script):
         """Callback for object:text-caret-moved accessibility events."""
 
         reason = AXUtilities.get_text_event_reason(event)
+        if reason == TextEventReason.BRAILLE_PANNING:
+            msg = "WEB: Ignoring caret-moved event that is a side effect of braille panning"
+            debug.print_message(debug.LEVEL_INFO, msg, True)
+            return True
+
         document = self.utilities.get_top_level_document_for_object(event.source)
         if not document:
             if self.utilities.event_is_browser_ui_noise_deprecated(event):
@@ -951,7 +977,6 @@ class Script(default.Script):
             return True
 
         notify = force = handled = False
-        AXObject.clear_cache(event.source, False, "Updating state for caret moved event.")
 
         in_focus_mode = document_presenter.get_presenter().in_focus_mode(self.app)
         if in_focus_mode:
@@ -1374,18 +1399,9 @@ class Script(default.Script):
             self.utilities.set_caret_context(obj, offset)
             return True
 
-        # TODO - JD: Can this logic be removed?
-        was_focused = AXUtilities.is_focused(obj)
-        AXObject.clear_cache(obj, False, "Sanity-checking focused state.")
-        is_focused = AXUtilities.is_focused(obj)
-        if was_focused != is_focused:
-            tokens = ["WEB: Focused state of", obj, "changed to", is_focused]
-            debug.print_tokens(debug.LEVEL_INFO, tokens, True)
-            return False
-
         if AXUtilities.is_anchor(obj):
             cause = "Context is anchor"
-        elif not (self.utilities.is_link(obj) and not is_focused):
+        elif not (self.utilities.is_link(obj) and not AXUtilities.is_focused(obj)):
             cause = "Context is not a non-focused link"
         elif self.utilities.is_child_of_current_fragment(obj):
             cause = "Context is child of current fragment"
