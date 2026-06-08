@@ -1071,8 +1071,11 @@ class StructuralNavigator(Extension):
             )
 
         # If we're not in a matching object, find the next/previous one based on the path.
+        # NB: objects may be the live per-root nav-cache list, so never mutate it in
+        # place -- reversing it here would corrupt cache order and make the *next*
+        # backward navigation see the wrong index (heading at index 0 -> "No more").
         if not is_next:
-            objects.reverse()
+            objects = list(reversed(objects))
 
         current_path = AXObject.get_path(obj)
         for match in objects:
