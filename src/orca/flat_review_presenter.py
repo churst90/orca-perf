@@ -261,6 +261,12 @@ class FlatReviewPresenter(Extension):
                 kb("KP_Up", keybindings.NO_MODIFIER_MASK),
                 kb("i", keybindings.ORCA_MODIFIER_MASK),
             ),
+            # Fork-local: an Orca+Up alias for "read current line" (NVDA-style),
+            # in addition to the numpad/laptop review keys above.
+            "readCurrentLineHandler": (
+                kb("Up", keybindings.ORCA_MODIFIER_MASK),
+                kb("Up", keybindings.ORCA_MODIFIER_MASK),
+            ),
             "reviewSpellCurrentLineHandler": (
                 kb("KP_Up", keybindings.NO_MODIFIER_MASK, 2),
                 kb("i", keybindings.ORCA_MODIFIER_MASK, 2),
@@ -346,6 +352,7 @@ class FlatReviewPresenter(Extension):
             ("reviewBottomLeftHandler", self.go_bottom_left, cmdnames.REVIEW_BOTTOM_LEFT),
             ("reviewPreviousLineHandler", self.go_previous_line, cmdnames.REVIEW_PREVIOUS_LINE),
             ("reviewCurrentLineHandler", self.present_line, cmdnames.REVIEW_CURRENT_LINE),
+            ("readCurrentLineHandler", self.present_line, cmdnames.READ_CURRENT_LINE),
             ("reviewNextLineHandler", self.go_next_line, cmdnames.REVIEW_NEXT_LINE),
             ("reviewSpellCurrentLineHandler", self.spell_line, cmdnames.REVIEW_SPELL_CURRENT_LINE),
             (
