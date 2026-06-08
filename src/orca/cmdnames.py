@@ -753,6 +753,12 @@ CARET_NAVIGATION_NEXT_LINE = _("Go to next line")
 CARET_NAVIGATION_PREV_LINE = _("Go to previous line")
 
 # Translators: this is a command related to navigating within a document.
+CARET_NAVIGATION_NEXT_SENTENCE = _("Go to next sentence")
+
+# Translators: this is a command related to navigating within a document.
+CARET_NAVIGATION_PREV_SENTENCE = _("Go to previous sentence")
+
+# Translators: this is a command related to navigating within a document.
 CARET_NAVIGATION_FILE_START = _("Go to the top of the file")
 
 # Translators: this is a command related to navigating within a document.

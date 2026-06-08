@@ -48,7 +48,7 @@ from . import (
 from .ax_object import AXObject
 from .ax_text import AXText
 from .ax_utilities import AXUtilities
-from .ax_utilities_text import CaretSetReason
+from .ax_utilities_text import AXUtilitiesText, CaretSetReason
 from .command import Command, KeyboardCommand
 from .extension import Extension
 
@@ -179,6 +179,24 @@ class CaretNavigator(Extension):
                     description,
                     desktop_keybinding=kb,
                     laptop_keybinding=kb,
+                    enabled=enabled,
+                ),
+            )
+
+        # Sentence navigation ships unbound; the underlying sentence utilities
+        # already exist, so these commands just expose them as caret movement.
+        # Users assign keys in Preferences (cf. the flat-review routing commands).
+        unbound_nav_commands = [
+            ("next_sentence", self.next_sentence, cmdnames.CARET_NAVIGATION_NEXT_SENTENCE),
+            ("previous_sentence", self.previous_sentence, cmdnames.CARET_NAVIGATION_PREV_SENTENCE),
+        ]
+        for name, function, description in unbound_nav_commands:
+            commands.append(
+                KeyboardCommand(
+                    name,
+                    function,
+                    self.GROUP_LABEL,
+                    description,
                     enabled=enabled,
                 ),
             )
@@ -659,6 +677,102 @@ class CaretNavigator(Extension):
 
         script.update_braille(obj, offset=start)
         script.say_word(obj)
+        return True
+
+    @dbus_service.command
+    @navigation_command
+    def next_sentence(
+        self,
+        script: default.Script,
+        event: input_event.InputEvent | None = None,
+        notify_user: bool = True,
+    ) -> bool:
+        """Moves to the next sentence."""
+
+        obj, offset = script.utilities.get_caret_context()
+        if obj is None:
+            return False
+
+        # Try to advance within the current object's text. If there is no
+        # further sentence here, cross into the next viable context and take
+        # the sentence there -- mirroring next_word()'s use of next_context()
+        # to traverse object boundaries in web content.
+        text, start, end = AXUtilitiesText.get_next_sentence(obj, offset)
+        if not text:
+            obj, offset = script.utilities.next_context(obj, offset, skip_space=True)
+            if obj is None:
+                return False
+            text, start, end = AXText.get_sentence_at_offset(obj, offset)
+            if not text:
+                return False
+
+        if not self._is_navigable_object(script, obj):
+            return False
+
+        contents = script.utilities.get_sentence_contents_at_offset(obj, start)
+        if not contents:
+            return False
+
+        self._last_input_event = event
+        presentation_manager.get_manager().interrupt_presentation()
+        script.utilities.set_caret_position(obj, start, reason=CaretSetReason.CARET_NAVIGATION)
+        focus_manager.get_manager().emit_region_changed(
+            obj,
+            start,
+            end,
+            focus_manager.CARET_NAVIGATOR,
+        )
+
+        if notify_user and not AXUtilities.is_math_related(obj):
+            presenter = presentation_manager.get_manager()
+            presenter.speak_contents(contents)
+            presenter.display_contents(contents)
+        return True
+
+    @dbus_service.command
+    @navigation_command
+    def previous_sentence(
+        self,
+        script: default.Script,
+        event: input_event.InputEvent | None = None,
+        notify_user: bool = True,
+    ) -> bool:
+        """Moves to the previous sentence."""
+
+        obj, offset = script.utilities.get_caret_context()
+        if obj is None:
+            return False
+
+        text, start, end = AXUtilitiesText.get_previous_sentence(obj, offset)
+        if not text:
+            obj, offset = script.utilities.previous_context(obj, offset, skip_space=True)
+            if obj is None:
+                return False
+            text, start, end = AXText.get_sentence_at_offset(obj, offset)
+            if not text:
+                return False
+
+        if not self._is_navigable_object(script, obj):
+            return False
+
+        contents = script.utilities.get_sentence_contents_at_offset(obj, start)
+        if not contents:
+            return False
+
+        self._last_input_event = event
+        presentation_manager.get_manager().interrupt_presentation()
+        script.utilities.set_caret_position(obj, start, reason=CaretSetReason.CARET_NAVIGATION)
+        focus_manager.get_manager().emit_region_changed(
+            obj,
+            start,
+            end,
+            focus_manager.CARET_NAVIGATOR,
+        )
+
+        if notify_user and not AXUtilities.is_math_related(obj):
+            presenter = presentation_manager.get_manager()
+            presenter.speak_contents(contents)
+            presenter.display_contents(contents)
         return True
 
     @dbus_service.command
