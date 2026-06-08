@@ -1928,10 +1928,11 @@ class SpeechManager(Extension):
         """Returns commands for registration."""
 
         kb_s = keybindings.KeyBinding("s", keybindings.ORCA_MODIFIER_MASK)
-        kb_ring_next = keybindings.KeyBinding("Right", keybindings.ORCA_CTRL_MODIFIER_MASK)
-        kb_ring_previous = keybindings.KeyBinding("Left", keybindings.ORCA_CTRL_MODIFIER_MASK)
-        kb_ring_increase = keybindings.KeyBinding("Up", keybindings.ORCA_CTRL_MODIFIER_MASK)
-        kb_ring_decrease = keybindings.KeyBinding("Down", keybindings.ORCA_CTRL_MODIFIER_MASK)
+        # Orca+Ctrl+Shift+arrows: Orca+Ctrl+arrows belong to the object navigator.
+        kb_ring_next = keybindings.KeyBinding("Right", keybindings.ORCA_CTRL_SHIFT_MODIFIER_MASK)
+        kb_ring_previous = keybindings.KeyBinding("Left", keybindings.ORCA_CTRL_SHIFT_MODIFIER_MASK)
+        kb_ring_increase = keybindings.KeyBinding("Up", keybindings.ORCA_CTRL_SHIFT_MODIFIER_MASK)
+        kb_ring_decrease = keybindings.KeyBinding("Down", keybindings.ORCA_CTRL_SHIFT_MODIFIER_MASK)
 
         commands_data = [
             (
