@@ -172,6 +172,10 @@ REVIEW_PREVIOUS_LINE = _("Move flat review to the beginning of the previous line
 # the user to explore this text by the {previous,next} {line,word,character}.
 REVIEW_CURRENT_LINE = _("Speak the current flat review line")
 
+# Translators: this command reads the current line (the same content as the flat
+# review current-line command), bound to a non-numpad key for convenience.
+READ_CURRENT_LINE = _("Read the current line")
+
 # Translators: the 'flat review' feature of Orca allows the blind user to
 # explore the text in a window in a 2D fashion.  That is, Orca treats all
 # the text from all objects in a window (e.g., buttons, labels, etc.) as a
@@ -449,6 +453,24 @@ INCREASE_SPEECH_INFLECTION = _("Increase the speech inflection")
 # Translators: the speech inflection is the pitch range used by the
 # speech synthesis engine. Less inflection means a more monotone voice.
 DECREASE_SPEECH_INFLECTION = _("Decrease the speech inflection")
+
+# Translators: the synthesizer settings ring lets the user cycle through speech
+# settings (rate, pitch, volume, inflection) and adjust the selected one without
+# leaving the document. This command selects the next setting in the ring.
+SYNTH_RING_NEXT_SETTING = _("Cycle to the next synthesizer setting")
+
+# Translators: the synthesizer settings ring lets the user cycle through speech
+# settings (rate, pitch, volume, inflection) and adjust the selected one without
+# leaving the document. This command selects the previous setting in the ring.
+SYNTH_RING_PREVIOUS_SETTING = _("Cycle to the previous synthesizer setting")
+
+# Translators: the synthesizer settings ring lets the user cycle through speech
+# settings and adjust the selected one. This command increases the selected setting.
+SYNTH_RING_INCREASE_SETTING = _("Increase the selected synthesizer setting")
+
+# Translators: the synthesizer settings ring lets the user cycle through speech
+# settings and adjust the selected one. This command decreases the selected setting.
+SYNTH_RING_DECREASE_SETTING = _("Decrease the selected synthesizer setting")
 
 # Translators: Orca allows the user to turn speech synthesis on or off.
 #  We call it 'silencing'.

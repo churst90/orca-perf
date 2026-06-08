@@ -1977,6 +1977,23 @@ SLEEP_MODE_DISABLED_FOR = _("Sleep mode disabled for %s.")
 # For example "Sleep mode enabled for VirtualBox."
 SLEEP_MODE_ENABLED_FOR = _("Sleep mode enabled for %s.")
 
+# Translators: Spoken when the user cycles to this setting in the synthesizer
+# settings ring. It is followed by the current value, e.g. "Rate 50".
+SYNTH_RING_RATE = _("Rate")
+
+# Translators: Spoken when the user cycles to this setting in the synthesizer
+# settings ring. It is followed by the current value, e.g. "Pitch 5".
+SYNTH_RING_PITCH = _("Pitch")
+
+# Translators: Spoken when the user cycles to this setting in the synthesizer
+# settings ring. It is followed by the current value, e.g. "Volume 10".
+SYNTH_RING_VOLUME = _("Volume")
+
+# Translators: Spoken when the user cycles to this setting in the synthesizer
+# settings ring. The inflection is the synthesizer's pitch range. It is followed
+# by the current value.
+SYNTH_RING_INFLECTION = _("Inflection")
+
 # Translators: This string announces speech rate change.
 SPEECH_FASTER = _("faster.")
 

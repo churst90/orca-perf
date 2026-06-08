@@ -1920,12 +1920,18 @@ class SpeechManager(Extension):
         self._health_check_pending: bool = False
         self._mute_speech: bool = False
         self._server: SpeechServer | None = None
+        # Index of the active setting in the synthesizer settings ring.
+        self._ring_index: int = 0
         super().__init__()
 
     def _get_commands(self) -> list[Command]:
         """Returns commands for registration."""
 
         kb_s = keybindings.KeyBinding("s", keybindings.ORCA_MODIFIER_MASK)
+        kb_ring_next = keybindings.KeyBinding("Right", keybindings.ORCA_CTRL_MODIFIER_MASK)
+        kb_ring_previous = keybindings.KeyBinding("Left", keybindings.ORCA_CTRL_MODIFIER_MASK)
+        kb_ring_increase = keybindings.KeyBinding("Up", keybindings.ORCA_CTRL_MODIFIER_MASK)
+        kb_ring_decrease = keybindings.KeyBinding("Down", keybindings.ORCA_CTRL_MODIFIER_MASK)
 
         commands_data = [
             (
@@ -1950,6 +1956,34 @@ class SpeechManager(Extension):
                 None,
             ),
             ("toggleSilenceSpeechHandler", self.toggle_speech, cmdnames.TOGGLE_SPEECH, kb_s, kb_s),
+            (
+                "nextSynthSettingHandler",
+                self.next_synth_setting,
+                cmdnames.SYNTH_RING_NEXT_SETTING,
+                kb_ring_next,
+                kb_ring_next,
+            ),
+            (
+                "previousSynthSettingHandler",
+                self.previous_synth_setting,
+                cmdnames.SYNTH_RING_PREVIOUS_SETTING,
+                kb_ring_previous,
+                kb_ring_previous,
+            ),
+            (
+                "increaseSynthSettingHandler",
+                self.increase_synth_setting,
+                cmdnames.SYNTH_RING_INCREASE_SETTING,
+                kb_ring_increase,
+                kb_ring_increase,
+            ),
+            (
+                "decreaseSynthSettingHandler",
+                self.decrease_synth_setting,
+                cmdnames.SYNTH_RING_DECREASE_SETTING,
+                kb_ring_decrease,
+                kb_ring_decrease,
+            ),
             (
                 "decreaseSpeechRateHandler",
                 self.decrease_rate,
@@ -3048,6 +3082,101 @@ class SpeechManager(Extension):
             presentation_manager.get_manager().present_message(full, f"{new_volume:g}")
 
         return True
+
+    def _synth_ring_parameters(
+        self,
+    ) -> list[tuple[str, Callable[..., bool], Callable[..., bool], Callable[[], Any]]]:
+        """Returns the synthesizer settings ring entries.
+
+        Each entry is (label, increase, decrease, getter). The increase and
+        decrease callables are the existing per-setting commands, so the ring
+        contributes no speech-control logic of its own; it only selects which
+        setting the adjust commands act on.
+        """
+
+        return [
+            (messages.SYNTH_RING_RATE, self.increase_rate, self.decrease_rate, self.get_rate),
+            (messages.SYNTH_RING_PITCH, self.increase_pitch, self.decrease_pitch, self.get_pitch),
+            (
+                messages.SYNTH_RING_VOLUME,
+                self.increase_volume,
+                self.decrease_volume,
+                self.get_volume,
+            ),
+            (
+                messages.SYNTH_RING_INFLECTION,
+                self.increase_pitch_range,
+                self.decrease_pitch_range,
+                self.get_pitch_range,
+            ),
+        ]
+
+    def _present_synth_ring_setting(self, script: default.Script | None) -> None:
+        """Announces the active ring setting and its current value, e.g. "Rate 50"."""
+
+        if script is None:
+            return
+        label, _increase, _decrease, getter = self._synth_ring_parameters()[self._ring_index]
+        full = f"{label} {float(getter()):g}"
+        presentation_manager.get_manager().present_message(full, full)
+
+    @dbus_service.command
+    def next_synth_setting(
+        self,
+        script: default.Script | None = None,
+        event: input_event.InputEvent | None = None,
+        notify_user: bool = True,
+    ) -> bool:
+        """Selects the next setting in the synthesizer settings ring."""
+
+        tokens = ["SPEECH MANAGER: next_synth_setting. Script:", script, "Event:", event]
+        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+
+        self._ring_index = (self._ring_index + 1) % len(self._synth_ring_parameters())
+        if notify_user:
+            self._present_synth_ring_setting(script)
+        return True
+
+    @dbus_service.command
+    def previous_synth_setting(
+        self,
+        script: default.Script | None = None,
+        event: input_event.InputEvent | None = None,
+        notify_user: bool = True,
+    ) -> bool:
+        """Selects the previous setting in the synthesizer settings ring."""
+
+        tokens = ["SPEECH MANAGER: previous_synth_setting. Script:", script, "Event:", event]
+        debug.print_tokens(debug.LEVEL_INFO, tokens, True)
+
+        self._ring_index = (self._ring_index - 1) % len(self._synth_ring_parameters())
+        if notify_user:
+            self._present_synth_ring_setting(script)
+        return True
+
+    @dbus_service.command
+    def increase_synth_setting(
+        self,
+        script: default.Script | None = None,
+        event: input_event.InputEvent | None = None,
+        notify_user: bool = True,
+    ) -> bool:
+        """Increases the setting currently selected in the synthesizer settings ring."""
+
+        _label, increase, _decrease, _getter = self._synth_ring_parameters()[self._ring_index]
+        return increase(script, event, notify_user)
+
+    @dbus_service.command
+    def decrease_synth_setting(
+        self,
+        script: default.Script | None = None,
+        event: input_event.InputEvent | None = None,
+        notify_user: bool = True,
+    ) -> bool:
+        """Decreases the setting currently selected in the synthesizer settings ring."""
+
+        _label, _increase, decrease, _getter = self._synth_ring_parameters()[self._ring_index]
+        return decrease(script, event, notify_user)
 
     @gsettings_registry.get_registry().gsetting(
         key=KEY_CAPITALIZATION_STYLE,
