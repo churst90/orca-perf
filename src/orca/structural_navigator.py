@@ -223,7 +223,11 @@ class StructuralNavigator(Extension):
         if cached is not None:
             self._nav_cache_hits += 1
             self._log_nav_cache(cache_key, hit=True, n=len(cached))
-            return cached
+            # Hand back a copy, never the stored list. Callers treat the result
+            # as a working list (e.g. reversing it for backward navigation), and
+            # mutating the cached list in place would corrupt every subsequent
+            # lookup for this (root, type) key.
+            return list(cached)
         t0 = time.monotonic()
         result = compute_fn()
         elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -240,7 +244,9 @@ class StructuralNavigator(Extension):
             self._nav_cache_rebuilders[full_key] = compute_fn
         self._nav_cache_misses += 1
         self._log_nav_cache(cache_key, hit=False, n=len(result), elapsed_ms=elapsed_ms)
-        return result
+        # Return a copy for the same reason as the cache-hit path above: the
+        # stored list must never be mutated by a caller.
+        return list(result)
 
     def _log_nav_cache(
         self,
