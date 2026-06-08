@@ -1282,6 +1282,15 @@ class AXObject:
         """Returns true if obj has the specified state"""
 
         if state_set is not None:
+            # A caller-supplied StateSet can outlive its object. Calling
+            # contains() on a set whose object has gone defunct segfaults
+            # libatspi (atspi_state_set_contains -> _atspi_dbus_call). Skip the
+            # dereference for objects we already know to be dead; is_valid()
+            # consults only Orca-internal bookkeeping, so it cannot itself
+            # crash on a freed object. This does not close the window where an
+            # object is freed mid-call, but it removes the common case.
+            if not AXObject.is_valid(obj):
+                return False
             return state_set.contains(state)
 
         if not AXObject.is_valid(obj):
