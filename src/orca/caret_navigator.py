@@ -183,20 +183,35 @@ class CaretNavigator(Extension):
                 ),
             )
 
-        # Sentence navigation ships unbound; the underlying sentence utilities
+        # Sentence navigation. Upstream would ship these unbound; this fork
+        # binds them to Orca+Left / Orca+Right to sit alongside character
+        # (arrows) and word (Ctrl+arrows) movement. The sentence utilities
         # already exist, so these commands just expose them as caret movement.
-        # Users assign keys in Preferences (cf. the flat-review routing commands).
-        unbound_nav_commands = [
-            ("next_sentence", self.next_sentence, cmdnames.CARET_NAVIGATION_NEXT_SENTENCE),
-            ("previous_sentence", self.previous_sentence, cmdnames.CARET_NAVIGATION_PREV_SENTENCE),
+        kb_right_orca = keybindings.KeyBinding("Right", keybindings.ORCA_MODIFIER_MASK)
+        kb_left_orca = keybindings.KeyBinding("Left", keybindings.ORCA_MODIFIER_MASK)
+        sentence_nav_commands = [
+            (
+                "next_sentence",
+                self.next_sentence,
+                cmdnames.CARET_NAVIGATION_NEXT_SENTENCE,
+                kb_right_orca,
+            ),
+            (
+                "previous_sentence",
+                self.previous_sentence,
+                cmdnames.CARET_NAVIGATION_PREV_SENTENCE,
+                kb_left_orca,
+            ),
         ]
-        for name, function, description in unbound_nav_commands:
+        for name, function, description, kb in sentence_nav_commands:
             commands.append(
                 KeyboardCommand(
                     name,
                     function,
                     self.GROUP_LABEL,
                     description,
+                    desktop_keybinding=kb,
+                    laptop_keybinding=kb,
                     enabled=enabled,
                 ),
             )
