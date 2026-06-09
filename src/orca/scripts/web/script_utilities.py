@@ -53,7 +53,6 @@ from orca import (
     speech_presenter,
 )
 from orca.ax_component import AXComponent
-from orca.ax_document import AXDocument
 from orca.ax_hypertext import AXHypertext
 from orca.ax_object import AXObject
 from orca.ax_text import AXText
@@ -1610,7 +1609,10 @@ class Utilities(script_utilities.Utilities):
             )
 
         objects: list[tuple[Atspi.Accessible, int, int, str]] = []
-        if offset > 0 and self.treat_as_end_of_line(obj, offset):
+        if offset > 0 and (
+            self.treat_as_end_of_line(obj, offset)
+            or AXUtilities.is_whitespace_at_end_of_line(obj, offset)
+        ):
             rect = self._get_extents(obj, offset - 1, offset)
         else:
             rect = self._get_extents(obj, offset, offset + 1)
@@ -1676,8 +1678,11 @@ class Utilities(script_utilities.Utilities):
                 on_same_line = AXUtilities.rects_are_on_same_line(rect, x_rect, rect.height)
             elif AXUtilities.is_subscript_or_superscript_text_descendant(x_obj, inclusive=True):
                 on_same_line = AXUtilities.rects_are_on_same_line(rect, x_rect, x_rect.height)
+            elif AXUtilities.is_subscript_or_superscript_text_descendant(obj, inclusive=True):
+                on_same_line = AXUtilities.rects_are_on_same_line(rect, x_rect, rect.height)
             else:
                 on_same_line = AXUtilities.rects_are_on_same_line(rect, x_rect)
+
             return on_same_line
 
         granularity = Atspi.TextGranularity.LINE
@@ -2024,10 +2029,11 @@ class Utilities(script_utilities.Utilities):
         if not descendants:
             return False
 
+        descendants_set = set(descendants)
         for descendant in descendants:
             if descendant not in (old_start, old_end, start, end) and AXUtilities.find_ancestor(
                 descendant,
-                lambda x: x in descendants,
+                lambda x: x in descendants_set,
             ):
                 AXUtilities.update_cached_selected_text(descendant)
             else:
@@ -2333,7 +2339,9 @@ class Utilities(script_utilities.Utilities):
         if AXUtilities.get_is_label_for(obj):
             end = max(1, AXText.get_character_count(obj))
             rect = AXText.get_range_rect(obj, 0, end)
-            if rect.x < 0 or rect.y < 0:
+            box = AXComponent.get_rect(obj)
+            box_is_collapsed = box.width <= 1 and box.height <= 1
+            if rect.x < 0 or rect.y < 0 or box_is_collapsed:
                 rv = True
 
         self._cached_is_off_screen_label[hash(obj)] = rv
@@ -2971,7 +2979,7 @@ class Utilities(script_utilities.Utilities):
             return False
 
         document = self.active_document()
-        fragment = AXDocument.get_document_uri_fragment(document)
+        fragment = AXUtilities.get_document_uri_fragment(document)
         if not fragment:
             return False
 
@@ -2985,12 +2993,12 @@ class Utilities(script_utilities.Utilities):
         else:
             link = AXUtilities.find_ancestor(old_focus, self.is_link)
 
-        return link and AXHypertext.get_link_uri(link) == AXDocument.get_uri(document)
+        return link and AXHypertext.get_link_uri(link) == AXUtilities.get_uri(document)
 
     def is_child_of_current_fragment(self, obj: Atspi.Accessible) -> bool:
         """Returns true if obj is a child of the current document fragment."""
 
-        fragment = AXDocument.get_document_uri_fragment(self.active_document())
+        fragment = AXUtilities.get_document_uri_fragment(self.active_document())
         if not fragment:
             return False
 

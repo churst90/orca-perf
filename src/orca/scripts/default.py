@@ -79,7 +79,6 @@ from orca import (
     typing_echo_presenter,
     where_am_i_presenter,
 )
-from orca.ax_document import AXDocument
 from orca.ax_object import AXObject
 from orca.ax_selection import AXSelection
 from orca.ax_text import AXText
@@ -986,9 +985,6 @@ class Script(script.Script):
         if event.detail1 < 0:
             return True
 
-        if not AXDocument.did_page_change(event.source):
-            return True
-
         presentation_manager.get_manager().present_message(messages.PAGE_NUMBER % event.detail1)
         return True
 
@@ -1126,7 +1122,10 @@ class Script(script.Script):
             lambda c: c == mouse_review_item or AXUtilities.is_layout_only(c),
         )
         if child is not None:
-            focus_manager.get_manager().set_locus_of_focus(event, child)
+            if AXUtilities.is_page_tab(child) and not AXUtilities.is_focused(child):
+                self.present_object(child, generate_braille=False)
+            else:
+                focus_manager.get_manager().set_locus_of_focus(event, child)
 
         return True
 
