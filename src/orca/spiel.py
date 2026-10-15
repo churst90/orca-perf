@@ -346,6 +346,9 @@ class SpeechServer(speechserver.SpeechServer):
         cap_style: CapitalizationStyle | None = None,
     ) -> None:
         debug.print_message(debug.LEVEL_INFO, f"SPIEL Character: '{character}'")
+        # speak() and speak_key_event() route single characters here, so
+        # this is the one place they reach speech_emitted subscribers.
+        self._emit_speech_emitted(character, acss)
 
         if not acss:
             acss = ACSS(self._default_voice)
@@ -401,6 +404,7 @@ class SpeechServer(speechserver.SpeechServer):
         else:
             msg = f"SPIEL: Speaking '{text}' as string"
             debug.print_message(debug.LEVEL_INFO, msg, True)
+            self._emit_speech_emitted(text, acss)
             utterance = self._create_utterance(text, acss)
             self._speak_utterance(utterance, acss)
 
@@ -521,6 +525,7 @@ class SpeechServer(speechserver.SpeechServer):
                         self._speaker.connect("mark-reached", _mark_reached, sayall_data),
                     )
 
+            self._emit_speech_emitted(context.utterance, acss)
             self._speak_utterance(spiel_utterance, acss)
 
     def _maybe_shutdown(self) -> bool:

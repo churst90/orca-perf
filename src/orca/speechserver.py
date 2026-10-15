@@ -248,6 +248,32 @@ class SpeechServer:
 
         return []
 
+    def _emit_speech_emitted(self, text: str, acss: dict[str, Any] | None) -> None:
+        """Hand text off to any speech_emitted subscribers.
+
+        Lives here so every backend reports the same speech. Wrapped in a
+        broad except so a misbehaving subscriber can never interfere with
+        the local speech that follows.
+        """
+
+        try:
+            from . import dbus_service  # pylint: disable=import-outside-toplevel
+
+            controller = dbus_service.get_remote_controller()
+            if controller is None:
+                return
+            language = ""
+            if acss:
+                family = acss.get(ACSS.FAMILY) or {}
+                if isinstance(family, dict):
+                    lang = family.get("lang", "") or ""
+                    dialect = family.get("dialect", "") or ""
+                    language = f"{lang}-{dialect}" if (lang and dialect) else lang
+            controller.emit_speech_emitted(text, "", language)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            msg = f"{self._LOG_PREFIX}: _emit_speech_emitted failed: {error}"
+            debug.print_message(debug.LEVEL_WARNING, msg, True)
+
     def _get_default_voice_language(
         self,
         voices: tuple[tuple[str, str, str | None], ...],
